@@ -33,6 +33,8 @@ PHASE_TO_ID = {name: index for index, name in enumerate(PHASES)}
 MODES = ("normal", "failure", "recovery", "verify", "handoff", "resumed", "unknown")
 MODE_TO_ID = {name: index for index, name in enumerate(MODES)}
 MODEL_INPUT_DIM = 76
+CANDIDATE_GEOMETRY_SLICE = slice(65, 76)
+CANDIDATE_GEOMETRY_DIM = 11
 
 PROPRIO_LAYOUT = (
     ("robot0_eef_pos", 3),

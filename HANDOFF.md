@@ -2792,3 +2792,48 @@ unified-recovery-best.safetensors
 Mamba2，而应先扩大candidate episodes，并测试在temporal state之外拼接最后时刻
 observable geometry的轻量skip connection，判断motion精度差距来自信息压缩还是数据
 不足。
+
+### 20.14 Observable geometry skip 消融：暂不采用
+
+为检验统一模型motion loss偏高是否来自Mamba state压缩，新增可选11-D旁路：
+
+```text
+target_to_eef (3) + validity
+target centroid (2) + validity
+mask measurement (2) + validity mask (2)
+```
+
+旁路只进入candidate head；Recovery Mamba2和旧heads继续冻结。首先发现candidate
+schema-v2 v1虽有depth/mask但未运行visual xyz enrichment，导致`target_to_eef`为零。
+因此补做纯可观测mask+depth enrichment：
+
+```text
+/data2/lty/naive-e-slotssm-runs/recovery-candidate-unified-v2-visual
+```
+
+920/920行成功计算xyz，validity gate接受613行；接受行teacher audit mean error
+1.81cm、P90 2.86cm。teacher pose只用于audit。
+
+同seed、同500-step设置的严格消融：
+
+```text
+v1  no visual enrichment, no skip:
+    unified-recovery-candidate-head-v1
+v3  visual enrichment + 11-D geometry skip:
+    unified-recovery-candidate-head-v3-visual-geometry
+v4  visual enrichment, no skip:
+    unified-recovery-candidate-head-v4-visual-no-skip
+```
+
+按validation regret选择：
+
+- v1 no-skip：regret=0.01270，motion=0.00304；
+- v3 visual+skip：regret=0.01932，motion=0.00283；
+- v4 visual/no-skip：regret=0.01684，motion=0.00325；
+- nominal regret=0.01672。
+
+geometry skip使对应最佳点motion约改善7%，但regret明显变差；仅加入visual enrichment
+也没有稳定改善。极小数据下无法区分是visual-validity分布、单episode过拟合还是
+feature融合方式导致。当前模型选择仍为v1 `unified-recovery-best.safetensors`，
+保留geometry-skip代码作为可选消融，但不进入shadow/在线控制。下一步回到扩大有效
+candidate episode，而不是继续在同一validation episode上调结构。

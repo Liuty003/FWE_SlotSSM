@@ -1310,6 +1310,12 @@ state同时服务原current heads和新的candidate future head。最佳validati
 完全一致。统一版regret仍略差于独立scorer 0.01057，且motion loss更高，因此下一步
 先扩数据和测试observable-geometry skip，不直接解冻Mamba2。
 
+11-D observable geometry skip消融已完成，并补齐920行mask+depth visual xyz。
+no-skip原版regret=0.01270；visual+skip=0.01932；visual/no-skip=0.01684。skip虽将对应
+最佳点motion loss从约0.00304降至0.00283，但排序退化，故暂不采用，模型选择保持
+Level-1 v1。此结果也表明不能继续针对单一validation episode调结构，下一优先级恢复
+为扩大有效candidate episodes和failure-trigger coverage。
+
 ---
 
 ## 17. 项目结束检查表

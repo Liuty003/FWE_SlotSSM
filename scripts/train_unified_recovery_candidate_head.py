@@ -38,6 +38,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--candidate-hidden-dim", type=int, default=128)
+    parser.add_argument("--geometry-skip", action="store_true")
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--ranking-margin", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=20260728)
@@ -98,7 +99,9 @@ def main() -> None:
         load_file(str(args.recovery_checkpoint)), strict=True
     )
     model = UnifiedRecoveryModel(
-        recovery, candidate_hidden_dim=args.candidate_hidden_dim
+        recovery,
+        candidate_hidden_dim=args.candidate_hidden_dim,
+        geometry_skip=args.geometry_skip,
     ).to(device)
     model.freeze_recovery()
     model.recovery.eval()
@@ -265,6 +268,7 @@ def main() -> None:
         "train_groups": len(datasets["train"]),
         "validation_groups": len(datasets["validation"]),
         "window_length": args.window_length,
+        "geometry_skip": args.geometry_skip,
         "best_selection_score": list(best_score),
         "history": history,
     }

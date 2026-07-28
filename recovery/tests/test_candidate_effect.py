@@ -169,6 +169,23 @@ class CandidateEffectTest(unittest.TestCase):
                 for parameter in unified.candidate_head.parameters()
             )
         )
+        geometry_model = UnifiedRecoveryModel(
+            RecoverySlotSSM(model_dim=32, num_layers=1, backend="gru"),
+            candidate_hidden_dim=32,
+            geometry_skip=True,
+        )
+        geometry_outputs = geometry_model(
+            batch["context"],
+            nominal_action=batch["nominal_action"],
+            candidate_actions=batch["candidate_actions"],
+            candidate_timestep=batch["candidate_timestep"],
+        )
+        self.assertEqual(
+            geometry_outputs["candidate"]["candidate_value"].shape, (1, 2)
+        )
+        self.assertIsNotNone(
+            geometry_model.candidate_head.geometry_encoder
+        )
 
 
 if __name__ == "__main__":
