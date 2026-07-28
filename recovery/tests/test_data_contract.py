@@ -141,8 +141,14 @@ class DataContractTest(unittest.TestCase):
         inputs = torch.randn(2, 4, 76)
         outputs = model(inputs)
         self.assertEqual(outputs["phase_logits"].shape, (2, 4, 9))
+        self.assertEqual(outputs["failure_onset_logits"].shape, (2, 4))
+        self.assertEqual(outputs["current_failure_logits"].shape, (2, 4))
         self.assertEqual(outputs["residual_action"].shape, (2, 4, 7))
-        loss = outputs["phase_logits"].mean() + outputs["residual_action"].mean()
+        loss = (
+            outputs["phase_logits"].mean()
+            + outputs["failure_onset_logits"].mean()
+            + outputs["residual_action"].mean()
+        )
         loss.backward()
         self.assertTrue(
             all(

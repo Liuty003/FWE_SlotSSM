@@ -89,7 +89,7 @@ def constrained_phase_decode(logits: torch.Tensor) -> torch.Tensor:
 
 def failure_gated_phase_decode(
     logits: torch.Tensor,
-    failure_probability: torch.Tensor,
+    onset_probability: torch.Tensor,
     *,
     threshold: float,
     confirm_steps: int = 2,
@@ -103,7 +103,7 @@ def failure_gated_phase_decode(
         if not triggered:
             consecutive = (
                 consecutive + 1
-                if float(failure_probability[timestep]) >= threshold else 0
+                if float(onset_probability[timestep]) >= threshold else 0
             )
             if consecutive >= confirm_steps:
                 triggered = True
@@ -191,6 +191,7 @@ def main() -> None:
         transitions += max(len(rows) - 1, 0)
 
         head_specs = {
+            "failure_onset": ("failure_onset_logits", "failure_onset_target", "failure_onset_valid"),
             "current_failure": ("current_failure_logits", "current_failure_target", "current_failure_valid"),
             "recovery_active": ("recovery_active_logits", "recovery_active_target", None),
             "verification": ("verification_logits", "verification_target", "verification_valid"),
@@ -282,6 +283,9 @@ def main() -> None:
                 "failure_probability": (
                     outputs["current_failure_logits"][0].sigmoid().cpu()
                 ),
+                "onset_probability": (
+                    outputs["failure_onset_logits"][0].sigmoid().cpu()
+                ),
             }
         )
 
@@ -324,9 +328,9 @@ def main() -> None:
             )
         calibrated_heads[name] = record
     gated_phase = {}
-    failure_calibration = calibrated_heads.get("current_failure")
-    if failure_calibration is not None:
-        threshold = failure_calibration["threshold_selected_on_validation"]
+    onset_calibration = calibrated_heads.get("failure_onset")
+    if onset_calibration is not None:
+        threshold = onset_calibration["threshold_selected_on_validation"]
         for split in ("validation", "development_test"):
             selected = [item for item in episode_cache if item["split"] == split]
             correct = total = 0
@@ -334,8 +338,9 @@ def main() -> None:
             for item in selected:
                 prediction = failure_gated_phase_decode(
                     item["phase_logits"],
-                    item["failure_probability"],
+                    item["onset_probability"],
                     threshold=threshold,
+                    confirm_steps=1,
                 )
                 valid = item["phase_valid"]
                 episode_correct = int(
@@ -373,11 +378,12 @@ def main() -> None:
         "aggregate_heads": aggregate_heads,
         "validation_calibrated_heads": calibrated_heads,
         "failure_gated_constrained_phase": {
-            "failure_threshold_selected_on_validation": (
-                failure_calibration["threshold_selected_on_validation"]
-                if failure_calibration is not None else None
+            "gate_head": "failure_onset",
+            "onset_threshold_selected_on_validation": (
+                onset_calibration["threshold_selected_on_validation"]
+                if onset_calibration is not None else None
             ),
-            "confirm_steps": 2,
+            "confirm_steps": 1,
             "splits": gated_phase,
         },
         "episodes": episode_reports,

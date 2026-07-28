@@ -102,6 +102,7 @@ def tensorize_transition(row: RecoveryTransition) -> dict[str, torch.Tensor]:
     phase_id = PHASE_TO_ID.get(str(labels.get("phase")), -1)
     mode_id = MODE_TO_ID.get(row.mode, MODE_TO_ID["unknown"])
     teacher_events_valid = float(bool(labels.get("teacher_event_labels_valid", False)))
+    failure_onset = labels.get("failure_onset_teacher")
     failure_active = labels.get("failure_active")
     attached = labels.get("attached")
     lifted = labels.get("lifted")
@@ -130,6 +131,14 @@ def tensorize_transition(row: RecoveryTransition) -> dict[str, torch.Tensor]:
         "phase_id": torch.tensor(phase_id, dtype=torch.long),
         "phase_valid": torch.tensor(float(phase_id >= 0), dtype=torch.float32),
         "mode_id": torch.tensor(mode_id, dtype=torch.long),
+        "failure_onset_target": torch.tensor(
+            float(bool(failure_onset)) if failure_onset is not None else 0.0,
+            dtype=torch.float32,
+        ),
+        "failure_onset_valid": torch.tensor(
+            teacher_events_valid if failure_onset is not None else 0.0,
+            dtype=torch.float32,
+        ),
         "current_failure_target": torch.tensor(
             float(bool(failure_active)) if failure_active is not None
             else float(row.mode == "failure"),

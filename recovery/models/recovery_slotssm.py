@@ -75,6 +75,7 @@ class RecoverySlotSSM(nn.Module):
             )
         self.output_norm = nn.LayerNorm(model_dim)
         self.phase_head = nn.Linear(model_dim, len(PHASES))
+        self.failure_onset_head = nn.Linear(model_dim, 1)
         self.current_failure_head = nn.Linear(model_dim, 1)
         self.recovery_active_head = nn.Linear(model_dim, 1)
         self.verification_head = nn.Linear(model_dim, 1)
@@ -101,6 +102,7 @@ class RecoverySlotSSM(nn.Module):
         return {
             "temporal_state": hidden,
             "phase_logits": self.phase_head(hidden),
+            "failure_onset_logits": self.failure_onset_head(hidden).squeeze(-1),
             "current_failure_logits": self.current_failure_head(hidden).squeeze(-1),
             "recovery_active_logits": self.recovery_active_head(hidden).squeeze(-1),
             "verification_logits": self.verification_head(hidden).squeeze(-1),

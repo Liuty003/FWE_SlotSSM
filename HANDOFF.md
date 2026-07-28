@@ -2519,3 +2519,45 @@ current-failure F1进一步降到0.586，判定为过拟合，不采用。
 failure是否持续存在”仍未解决。下一步不能打开final-test；应在development上改为
 onset/duration分离建模，加入contact-loss可观测代理、target motion与action-conditioned
 effect，并先做candidate scorer/shadow ranking。方法冻结后，final-test只评一次。
+
+### 20.8 Onset / persistence / resolution 分离模型
+
+已完成最小无重复的三部分设计：
+
+- 新增 `failure_onset_head`，监督单帧因果 onset；
+- 原 `current_failure_head` 明确作为 persistence 状态头；
+- 原 `handoff_head` 复用为 resolution / safe-to-handoff 头，避免再造同义输出；
+- phase gate 改由 validation-calibrated onset probability 单帧触发，不再用持续状态
+  probability冒充瞬时事件。
+
+相关代码：
+
+```text
+recovery/data/tensor_dataset.py
+recovery/models/recovery_slotssm.py
+scripts/train_recovery_slotssm_smoke.py
+scripts/evaluate_recovery_slotssm_sequential.py
+```
+
+500-step Mamba2：
+
+```text
+/data2/lty/naive-e-slotssm-runs/recovery-slotssm-v13-mamba2-split-head-500
+/data2/lty/naive-e-slotssm-runs/recovery-slotssm-sequential-audit-v13-mamba2-split-head-500
+```
+
+validation选择onset threshold=0.95。development-test：
+
+- onset：precision=1.000、recall=0.833、F1=0.909（5/6 onset，0 FP）；
+- persistence：precision=0.676、recall=0.478、F1=0.560；
+- resolution/handoff：precision=0.932、recall=0.971、F1=0.951；
+- verification F1=0.700；
+- slip F1=0.706；
+- raw phase=90.09%，constrained phase=68.63%；
+- onset-gated phase=63.37%，相比单头因果基线46.37%明显改善；
+- `online_smoke_allowed=false`，final-test未打开。
+
+结论：early failure“发生时刻”已能较可靠识别，resolution也较强；当前主要问题收敛为
+persistence，即在没有privileged contact的线上输入中判断失败是否仍持续。下一步应
+加入policy-observable target-motion/contact-loss proxy，并开始action-conditioned
+candidate effect scorer；不能用打开final-test来指导这些修改。

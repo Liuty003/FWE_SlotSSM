@@ -92,6 +92,11 @@ def losses(
         reduction="none",
     ).reshape_as(sequence["phase_valid"])
     phase_loss = masked_mean(phase, sequence["phase_valid"])
+    onset_loss = balanced_binary_loss(
+        outputs["failure_onset_logits"],
+        sequence["failure_onset_target"],
+        sequence["failure_onset_valid"],
+    )
     failure_loss = balanced_binary_loss(
         outputs["current_failure_logits"],
         sequence["current_failure_target"],
@@ -135,6 +140,7 @@ def losses(
     residual_loss = masked_mean(residual, sequence["expert_action_valid"])
     total = (
         phase_loss
+        + onset_loss
         + failure_loss
         + recovery_loss
         + 0.5 * verification_loss
@@ -147,6 +153,7 @@ def losses(
     return {
         "total": total,
         "phase": phase_loss,
+        "onset": onset_loss,
         "failure": failure_loss,
         "recovery": recovery_loss,
         "verification": verification_loss,
@@ -230,7 +237,8 @@ def main() -> None:
                 if str(row.labels.get("phase")) in PHASE_TO_ID
             ]
             event_boost = 1.5 if any(
-                bool(row.labels.get("failure_detection_event"))
+                bool(row.labels.get("failure_onset_teacher"))
+                or bool(row.labels.get("failure_detection_event"))
                 or bool(row.labels.get("slipped"))
                 for row in window.rows
             ) else 1.0
@@ -335,8 +343,8 @@ def main() -> None:
         "validation": validation,
         "checkpoint": str(checkpoint.resolve()),
         "claim_limit": (
-            "training-path smoke only; labels are legacy phase/controller labels "
-            "and this is not an online-qualified recovery policy"
+            "offline training only; onset, persistence, and handoff supervision "
+            "are separated, but this is not an online-qualified recovery policy"
         ),
     }
     (args.output_dir / "report.json").write_text(

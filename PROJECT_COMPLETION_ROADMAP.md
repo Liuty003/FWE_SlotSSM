@@ -1272,6 +1272,11 @@ current-failure F1=0.640、failure-gated phase=46.37%，这是更困难但可信
 用于任何模型性能评估。当前下一研究点是onset/duration分离与action-conditioned
 candidate scorer，而不是继续用旧漏标追求高分。
 
+onset/duration分离第一版已完成：独立onset head在development达到F1=0.909且0 FP，
+onset-gated phase提升到63.37%，resolution/handoff F1=0.951；persistence F1仍为
+0.560。下一实现目标因此明确为observable persistence evidence和
+action-conditioned candidate effect/risk scorer。final-test继续封存。
+
 ---
 
 ## 17. 项目结束检查表
