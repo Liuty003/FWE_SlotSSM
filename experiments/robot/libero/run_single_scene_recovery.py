@@ -27,6 +27,11 @@ from run_openvla_baseline import (
     jsonable, load_openvla, predict_action, write_json,
 )
 from recovery.teachers.sim_contact import extract_target_gripper_contact
+from recovery.data.candidate_schema import (
+    CANDIDATE_SCHEMA_VERSION,
+    RecoveryCandidateGroup,
+)
+from recovery.models.candidate_effect_scorer import generate_recovery_candidates
 
 
 def arguments():
@@ -100,6 +105,21 @@ def arguments():
         "--expert-dataset-dir", type=Path,
         help="Optionally save per-step RGB/depth/mask and oracle recovery actions.",
     )
+    parser.add_argument(
+        "--candidate-dataset-dir",
+        type=Path,
+        help="Save matched short-horizon branches from recovery states.",
+    )
+    parser.add_argument("--candidate-collect-every", type=int, default=12)
+    parser.add_argument("--candidate-max-forks", type=int, default=4)
+    parser.add_argument("--candidate-branch-steps", type=int, default=4)
+    parser.add_argument(
+        "--candidate-split",
+        choices=("train", "validation", "development_test"),
+        default="train",
+    )
+    parser.add_argument("--candidate-translation-delta", type=float, default=0.20)
+    parser.add_argument("--candidate-rotation-delta", type=float, default=0.15)
     return parser.parse_args()
 
 
@@ -419,6 +439,148 @@ class VisualRegraspController:
         return probability, self.streak >= self.confirm_steps
 
 
+def collect_candidate_group(
+    *,
+    fork_env,
+    sim_state,
+    task_suite,
+    task_id,
+    episode_id,
+    timestep,
+    split,
+    phase,
+    nominal,
+    executed,
+    target_name,
+    target_key,
+    initial_target_z,
+    attached_before,
+    branch_steps,
+    translation_delta,
+    rotation_delta,
+):
+    """Roll all candidates from one identical simulator state."""
+
+    names, actions = generate_recovery_candidates(
+        torch.from_numpy(np.asarray(nominal, np.float32)),
+        torch.from_numpy(
+            np.asarray(executed, np.float32) - np.asarray(nominal, np.float32)
+        ),
+        translation_delta=translation_delta,
+        rotation_delta=rotation_delta,
+    )
+    restored = fork_env.regenerate_obs_from_state(sim_state)
+    before_eef = np.asarray(restored["robot0_eef_pos"], np.float32)
+    before_target = np.asarray(restored[target_key], np.float32)
+    before_distance = float(np.linalg.norm(before_eef - before_target))
+    outcomes = []
+    valid = []
+    max_restore_error = 0.0
+    for action in actions.numpy():
+        try:
+            branch_obs = fork_env.regenerate_obs_from_state(sim_state)
+            restore_error = max(
+                float(
+                    np.max(
+                        np.abs(
+                            np.asarray(
+                                branch_obs["robot0_eef_pos"], np.float32
+                            )
+                            - before_eef
+                        )
+                    )
+                ),
+                float(
+                    np.max(
+                        np.abs(
+                            np.asarray(branch_obs[target_key], np.float32)
+                            - before_target
+                        )
+                    )
+                ),
+            )
+            max_restore_error = max(max_restore_error, restore_error)
+            if restore_error > 1e-6:
+                raise RuntimeError(
+                    f"candidate state restore error {restore_error:.3e}"
+                )
+            fork_env.env.timestep = 0
+            fork_env.env.done = False
+            steps_executed = 0
+            for _ in range(branch_steps):
+                branch_obs, _, done, _ = fork_env.step(action.tolist())
+                steps_executed += 1
+                if done:
+                    break
+            after_eef = np.asarray(branch_obs["robot0_eef_pos"], np.float32)
+            after_target = np.asarray(branch_obs[target_key], np.float32)
+            _, attached_after = extract_target_gripper_contact(
+                fork_env.env.sim, target_name=target_name
+            )
+            target_lift = float(after_target[2]) - initial_target_z
+            lifted_after = target_lift >= 0.03
+            slipped_after = bool(attached_before and not attached_after)
+            handoff_ready = bool(attached_after and lifted_after)
+            failure_persistent = not handoff_ready
+            distance_progress = before_distance - float(
+                np.linalg.norm(after_eef - after_target)
+            )
+            # A task-independent recovery utility: approach progress remains
+            # informative before contact, while stable lift/handoff dominates.
+            teacher_value = (
+                10.0 * distance_progress
+                + float(attached_after)
+                + float(lifted_after)
+                - float(slipped_after)
+                - 0.5 * float(failure_persistent)
+                + float(handoff_ready)
+            )
+            outcomes.append(
+                {
+                    "eef_delta_m": (after_eef - before_eef).tolist(),
+                    "target_delta_m": (after_target - before_target).tolist(),
+                    "attached_after": bool(attached_after),
+                    "lifted_after": bool(lifted_after),
+                    "slipped_after": slipped_after,
+                    "failure_persistent_after": failure_persistent,
+                    "handoff_ready_after": handoff_ready,
+                    "teacher_value": teacher_value,
+                    "target_lift_m": target_lift,
+                    "eef_target_distance_progress_m": distance_progress,
+                    "branch_steps_executed": steps_executed,
+                }
+            )
+            valid.append(True)
+        except Exception as error:
+            outcomes.append({"error": repr(error)})
+            valid.append(False)
+    group = RecoveryCandidateGroup(
+        schema_version=CANDIDATE_SCHEMA_VERSION,
+        task_suite=task_suite,
+        task_id=task_id,
+        episode_id=episode_id,
+        timestep=timestep,
+        split=split,
+        context_transition_path=f"transitions-v2.jsonl#{timestep}",
+        nominal_action=np.asarray(nominal, np.float32).tolist(),
+        candidate_names=names,
+        candidate_actions=actions.numpy().tolist(),
+        outcome_valid=valid,
+        teacher_outcomes=outcomes,
+        provenance={
+            "collector": "run_single_scene_recovery.py",
+            "phase": phase,
+            "branch_horizon": branch_steps,
+            "translation_delta": translation_delta,
+            "rotation_delta": rotation_delta,
+            "sim_state_restored_per_candidate": True,
+            "max_restore_error_m": max_restore_error,
+        },
+    )
+    group.validate()
+    return group
+
+
 def main():
     args = arguments()
     from libero.libero import benchmark, get_libero_path
@@ -456,12 +618,38 @@ def main():
     env.seed(args.seed)
     env.reset()
     obs = env.set_init_state(initial_states[args.episode_id])
+    fork_env = None
+    if args.candidate_dataset_dir is not None:
+        if args.candidate_collect_every <= 0:
+            raise ValueError("--candidate-collect-every must be positive")
+        if args.candidate_max_forks <= 0:
+            raise ValueError("--candidate-max-forks must be positive")
+        if args.candidate_branch_steps <= 0:
+            raise ValueError("--candidate-branch-steps must be positive")
+        fork_env = env_class(
+            bddl_file_name=str(bddl),
+            camera_heights=256,
+            camera_widths=256,
+            camera_depths=(
+                args.expert_dataset_dir is not None
+                or args.learned_recovery_checkpoint is not None
+            ),
+        )
+        fork_env.seed(args.seed)
+        fork_env.reset()
+        fork_env.set_init_state(initial_states[args.episode_id])
 
     rollout = args.rollout_dir or args.output.with_suffix("")
     rollout.mkdir(parents=True, exist_ok=True)
     steps_path, metadata_path = rollout / "steps.jsonl", rollout / "metadata.json"
     steps_path.write_text("", encoding="utf-8")
     expert_path = None
+    candidate_path = None
+    candidates_written = 0
+    if args.candidate_dataset_dir is not None:
+        args.candidate_dataset_dir.mkdir(parents=True, exist_ok=True)
+        candidate_path = args.candidate_dataset_dir / "candidates.jsonl"
+        candidate_path.write_text("", encoding="utf-8")
     expert_rgb_dir = expert_depth_dir = expert_mask_dir = None
     if args.expert_dataset_dir is not None:
         args.expert_dataset_dir.mkdir(parents=True, exist_ok=True)
@@ -526,6 +714,12 @@ def main():
             str(args.expert_dataset_dir.resolve())
             if args.expert_dataset_dir is not None else None
         ),
+        "candidate_dataset_dir": (
+            str(args.candidate_dataset_dir.resolve())
+            if args.candidate_dataset_dir is not None else None
+        ),
+        "candidate_branch_steps": args.candidate_branch_steps,
+        "candidate_max_forks": args.candidate_max_forks,
         "completed": False, "success": False,
     }
     write_json(metadata_path, metadata)
@@ -803,6 +997,52 @@ def main():
                 phase, executed = "RESUMED TASK", nominal.copy()
             else:
                 phase, executed = "NOMINAL", nominal.copy()
+            candidate_phases = (
+                "RETURN TO BOWL",
+                "DESCEND",
+                "CLOSE GRIPPER",
+                "VERIFY LIFT",
+            )
+            should_collect_candidates = (
+                fork_env is not None
+                and candidate_path is not None
+                and phase in candidate_phases
+                and candidates_written < args.candidate_max_forks
+                and failure_detected_step is not None
+                and (
+                    (step - failure_detected_step)
+                    % args.candidate_collect_every
+                    == 0
+                )
+            )
+            if should_collect_candidates:
+                candidate_group = collect_candidate_group(
+                    fork_env=fork_env,
+                    sim_state=env.get_sim_state().copy(),
+                    task_suite=args.task_suite,
+                    task_id=args.task_id,
+                    episode_id=dataset_episode_id,
+                    timestep=step,
+                    split=args.candidate_split,
+                    phase=phase,
+                    nominal=nominal,
+                    executed=executed,
+                    target_name=target_name,
+                    target_key=target_key,
+                    initial_target_z=initial_target_z,
+                    attached_before=attached_truth,
+                    branch_steps=args.candidate_branch_steps,
+                    translation_delta=args.candidate_translation_delta,
+                    rotation_delta=args.candidate_rotation_delta,
+                )
+                with candidate_path.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        json.dumps(
+                            candidate_group.to_dict(), ensure_ascii=False
+                        )
+                        + "\n"
+                    )
+                candidates_written += 1
             before_eef = np.asarray(obs["robot0_eef_pos"], np.float32)
             next_obs, reward, done, info = env.step(executed.tolist())
             success = bool(env.check_success())
@@ -897,6 +1137,8 @@ def main():
                 break
     finally:
         env.close()
+        if fork_env is not None:
+            fork_env.close()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     imageio.mimsave(args.output, frames, fps=args.fps)
     metadata.update({
@@ -916,6 +1158,10 @@ def main():
         "peak_visual_rise_px": peak_visual_rise,
         "expert_transitions_jsonl": (
             str(expert_path.resolve()) if expert_path is not None else None
+        ),
+        "candidate_groups": candidates_written,
+        "candidates_jsonl": (
+            str(candidate_path.resolve()) if candidate_path is not None else None
         ),
         "recovery_claim": (
             "successful nominal negative episode; no failure was injected"

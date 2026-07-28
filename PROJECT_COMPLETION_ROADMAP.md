@@ -1285,6 +1285,12 @@ dataset/collator、有界候选生成、action-conditioned effect/value scorer�
 determinism、action sensitivity、held-out ranking和shadow evaluation；final-test
 保持封存。
 
+Phase 6第一份真实MuJoCo recovery candidate smoke也已完成：独立fork环境从2个
+RETURN TO BOWL状态采得23/23有效4-step branches；同状态不同动作的teacher value
+和EEF位移均有可见跨度。主轨迹成功转换为170行schema-v2，真实候选batch可直接进入
+76-D context scorer且联合loss反向传播梯度finite。下一步从“实现collector”转为
+多episode、多phase配额采集和严格按episode的train/validation ranking评测。
+
 ---
 
 ## 17. 项目结束检查表

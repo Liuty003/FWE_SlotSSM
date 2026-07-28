@@ -2599,3 +2599,46 @@ Recovery SlotSSM连续hidden/slot memory，以实现真正共享时序表示。
 4. 扩展train/validation candidate groups，但继续封存final-test；
 5. 训练评分器，检查action shuffle、best-candidate accuracy、regret和校准；
 6. 通过离线gate后才做只读shadow ranking，仍不立即改变在线动作。
+
+### 20.10 第一份 recovery-state matched candidate 仿真数据
+
+`run_single_scene_recovery.py` 已接入可选的独立MuJoCo fork collector。主环境继续
+生成视频和闭环轨迹；第二个环境在候选采集点恢复主环境的flattened state，每个候选
+都从同一个state重新开始，因此候选branch不会修改主策略observation或tracker状态。
+新增参数包括：
+
+```text
+--candidate-dataset-dir
+--candidate-collect-every
+--candidate-max-forks
+--candidate-branch-steps
+--candidate-split
+--candidate-translation-delta
+--candidate-rotation-delta
+```
+
+首次smoke使用task9 init-state10、dataset episode9000、2个RETURN TO BOWL状态、
+4-step horizon：
+
+```text
+/data2/lty/naive-e-slotssm-runs/recovery-candidate-smoke-v1
+/data2/lty/naive-e-slotssm-runs/recovery-candidate-expert-smoke-v1
+/data2/lty/naive-e-slotssm-runs/recovery-candidates-smoke-v1
+/data2/lty/naive-e-slotssm-runs/recovery-candidate-unified-smoke-v1
+```
+
+结果：
+
+- 2 matched groups，分别11和12个去重候选，23/23 branch有效；
+- 第一组teacher value跨度0.454，EEF 4-step位移范数跨度1.19–7.23cm；
+- 第二组teacher value跨度0.110，EEF位移范数跨度0.67–2.08cm；
+- 两组的recovery center都不如nominal，证明候选筛选不是无意义恒等操作，也说明
+  当前learned mean recovery action并不总是短视野最优；
+- 170行主轨迹schema-v2 audit valid，媒体/contact完整且missing files=0；
+- 真实候选batch形状为context `[2,76]`、actions `[2,12,7]`，23个有效branch；
+- effect/risk/ranking联合loss成功反向传播，所有梯度finite。
+
+这次主episode在170步限制内未完成恢复，不影响candidate data smoke的成立。当前还
+不能报告学习排序精度：只有一个episode和两个group，且全部是RETURN状态。下一步
+必须扩展到多个episode并覆盖RETURN、DESCEND、CLOSE、VERIFY，按episode划分
+train/validation；随后才能训练和做action-shuffle / regret评估。
