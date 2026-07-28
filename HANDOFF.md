@@ -2642,3 +2642,48 @@ Recovery SlotSSM连续hidden/slot memory，以实现真正共享时序表示。
 不能报告学习排序精度：只有一个episode和两个group，且全部是RETURN状态。下一步
 必须扩展到多个episode并覆盖RETURN、DESCEND、CLOSE、VERIFY，按episode划分
 train/validation；随后才能训练和做action-shuffle / regret评估。
+
+### 20.11 第一轮跨 episode candidate scorer
+
+新增可分片复现脚本：
+
+```text
+scripts/collect_recovery_candidates_v1.sh
+```
+
+候选配额尝试4个开发初始状态；init9和init0未触发失败检测，因此零候选且未伪造
+样本。有效数据：
+
+```text
+/data2/lty/naive-e-slotssm-runs/recovery-candidates-v1
+/data2/lty/naive-e-slotssm-runs/recovery-candidate-expert-v1
+/data2/lty/naive-e-slotssm-runs/recovery-candidate-unified-v1
+```
+
+- train episode9101/init10：12 groups、143 valid branches，覆盖RETURN、DESCEND、
+  CLOSE、VERIFY；
+- validation episode9102/init11：12 groups、142 valid branches，覆盖RETURN和
+  DESCEND；
+- 统一主轨迹4 episodes / 920 rows，schema/media/contact audit valid；
+- split严格按episode，未使用冻结的6条final-test。
+
+500-step scorer：
+
+```text
+/data2/lty/naive-e-slotssm-runs/recovery-candidate-scorer-v2
+```
+
+step400按validation regret优先选为best：
+
+- held-out best-candidate accuracy=16.7%，约12候选的uniform random为约8.3%；
+- pairwise accuracy=67.0%；
+- mean regret=0.01057，优于nominal=0.01672和uniform random expected=0.03661；
+- 正常validation total loss=0.06556，打乱candidate action后=0.09908，
+  增加0.03352（约51.1%），说明value/ranking输出确实读取动作；
+- step500 action-shuffle loss仍增加约44.6%。
+
+这是第一次得到held-out episode上的正向candidate ranking信号，但样本仍极小：
+只有1个有效train episode和1个validation episode，validation也没有CLOSE/VERIFY。
+不能据此开启在线候选控制。下一步需改进failure-trigger coverage并再采至少3–5个
+有效train、2–3个validation episodes；同时应把当前手工teacher value分解为
+phase-aware progress与安全分数做消融，避免utility定义主导结论。

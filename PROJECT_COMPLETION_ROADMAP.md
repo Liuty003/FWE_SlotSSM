@@ -1291,6 +1291,13 @@ RETURN TO BOWL状态采得23/23有效4-step branches；同状态不同动作的t
 76-D context scorer且联合loss反向传播梯度finite。下一步从“实现collector”转为
 多episode、多phase配额采集和严格按episode的train/validation ranking评测。
 
+候选v1随后得到1个有效train episode和1个独立validation episode，各12 groups，
+共285个有效branches。500-step scorer在validation的best-candidate accuracy为
+16.7%（uniform随机约8.3%），pairwise accuracy约67.0%，mean regret 0.01057，
+优于nominal 0.01672和uniform random expected 0.03661；打乱candidate action使
+validation loss从0.06556升至0.09908。该结果证明了初步action sensitivity和排序
+收益，但episode数远不足，且validation未覆盖CLOSE/VERIFY，仍禁止在线控制。
+
 ---
 
 ## 17. 项目结束检查表

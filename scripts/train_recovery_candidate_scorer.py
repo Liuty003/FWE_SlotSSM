@@ -106,7 +106,10 @@ def main() -> None:
     def evaluate() -> dict[str, float]:
         model.eval()
         totals: dict[str, float] = {}
+        shuffled_totals: dict[str, float] = {}
         correct = count = 0
+        regret_sum = pair_correct = pair_count = 0.0
+        nominal_regret_sum = random_regret_sum = 0.0
         for raw in validation_loader:
             batch = move(raw)
             outputs = model(
@@ -119,6 +122,24 @@ def main() -> None:
             )
             for name, value in values.items():
                 totals[name] = totals.get(name, 0.0) + float(value)
+            shuffled_actions = batch["candidate_actions"].clone()
+            for batch_index in range(len(shuffled_actions)):
+                indices = batch["candidate_mask"][batch_index].nonzero().flatten()
+                shuffled_actions[batch_index, indices] = shuffled_actions[
+                    batch_index, indices.flip(0)
+                ]
+            shuffled_outputs = model(
+                batch["context"],
+                batch["nominal_action"],
+                shuffled_actions,
+            )
+            shuffled_values = candidate_effect_losses(
+                shuffled_outputs, batch, ranking_margin=args.ranking_margin
+            )
+            for name, value in shuffled_values.items():
+                shuffled_totals[name] = (
+                    shuffled_totals.get(name, 0.0) + float(value)
+                )
             masked_prediction = outputs["candidate_value"].masked_fill(
                 ~batch["outcome_valid"], float("-inf")
             )
@@ -128,6 +149,38 @@ def main() -> None:
             correct += int(
                 (masked_prediction.argmax(1) == masked_target.argmax(1)).sum()
             )
+            predicted_index = masked_prediction.argmax(1)
+            best_target = masked_target.max(1).values
+            chosen_target = batch["teacher_value"].gather(
+                1, predicted_index[:, None]
+            ).squeeze(1)
+            regret_sum += float((best_target - chosen_target).sum())
+            for batch_index, metadata in enumerate(raw["metadata"]):
+                candidate_count = len(metadata["candidate_names"])
+                target = batch["teacher_value"][batch_index, :candidate_count]
+                best = target.max()
+                nominal_index = metadata["candidate_names"].index("nominal")
+                nominal_regret_sum += float(best - target[nominal_index])
+                random_regret_sum += float((best - target).mean())
+            predicted_difference = (
+                outputs["candidate_value"][:, :, None]
+                - outputs["candidate_value"][:, None, :]
+            )
+            target_difference = (
+                batch["teacher_value"][:, :, None]
+                - batch["teacher_value"][:, None, :]
+            )
+            pair_valid = (
+                batch["outcome_valid"][:, :, None]
+                & batch["outcome_valid"][:, None, :]
+                & target_difference.abs().gt(1e-6)
+            )
+            pair_correct += float(
+                (
+                    predicted_difference.sign() == target_difference.sign()
+                )[pair_valid].sum()
+            )
+            pair_count += int(pair_valid.sum())
             count += len(batch["context"])
         model.train()
         return {
@@ -135,11 +188,31 @@ def main() -> None:
                 f"validation_{name}": value / max(len(validation_loader), 1)
                 for name, value in totals.items()
             },
+            **{
+                f"shuffled_validation_{name}": (
+                    value / max(len(validation_loader), 1)
+                )
+                for name, value in shuffled_totals.items()
+            },
             "validation_best_candidate_accuracy": correct / max(count, 1),
+            "validation_mean_regret": regret_sum / max(count, 1),
+            "validation_nominal_mean_regret": (
+                nominal_regret_sum / max(count, 1)
+            ),
+            "validation_uniform_random_expected_regret": (
+                random_regret_sum / max(count, 1)
+            ),
+            "validation_pairwise_accuracy": pair_correct / max(pair_count, 1),
+            "validation_action_shuffle_loss_delta": (
+                shuffled_totals.get("total", 0.0)
+                - totals.get("total", 0.0)
+            )
+            / max(len(validation_loader), 1),
         }
 
     iterator = iter(train_loader)
     history = []
+    best_score = (float("inf"), float("inf"))
     for step in range(1, args.steps + 1):
         try:
             batch = move(next(iterator))
@@ -166,6 +239,23 @@ def main() -> None:
             }
             history.append(record)
             print(json.dumps(record), flush=True)
+            score = (
+                record["validation_mean_regret"],
+                record["validation_total"],
+            )
+            if score < best_score:
+                best_score = score
+                args.output_dir.mkdir(parents=True, exist_ok=True)
+                save_file(
+                    {
+                        key: value.detach().cpu().contiguous()
+                        for key, value in model.state_dict().items()
+                    },
+                    str(
+                        args.output_dir
+                        / "candidate-scorer-best.safetensors"
+                    ),
+                )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     save_file(
@@ -175,14 +265,22 @@ def main() -> None:
         },
         str(args.output_dir / "candidate-scorer.safetensors"),
     )
+    def jsonable(value):
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, (list, tuple)):
+            return [jsonable(item) for item in value]
+        return value
+
     report = {
         "config": {
-            key: str(value) if isinstance(value, Path) else value
+            key: jsonable(value)
             for key, value in vars(args).items()
         },
         "train_groups": len(train),
         "validation_groups": len(validation),
         "history": history,
+        "best_selection_score": list(best_score),
     }
     (args.output_dir / "report.json").write_text(
         json.dumps(report, indent=2), encoding="utf-8"
