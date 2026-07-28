@@ -96,6 +96,62 @@ class RecoveryCandidateDataset(Dataset[dict[str, Any]]):
         }
 
 
+class UnifiedRecoveryCandidateDataset(RecoveryCandidateDataset):
+    """Candidate groups with a causal history ending at the branch state."""
+
+    def __init__(
+        self,
+        groups: Sequence[RecoveryCandidateGroup],
+        transitions: Mapping[
+            tuple[str, int, int, int], RecoveryTransition
+        ],
+        *,
+        window_length: int = 32,
+    ):
+        if window_length <= 0:
+            raise ValueError("window_length must be positive")
+        super().__init__(groups, transitions)
+        self.window_length = window_length
+        self.history_keys: list[list[tuple[str, int, int, int]]] = []
+        for group in self.groups:
+            start = group.timestep - window_length + 1
+            if start < 0:
+                raise ValueError(
+                    f"candidate timestep {group.timestep} has insufficient history"
+                )
+            keys = [
+                (
+                    group.task_suite,
+                    group.task_id,
+                    group.episode_id,
+                    timestep,
+                )
+                for timestep in range(start, group.timestep + 1)
+            ]
+            missing = [key for key in keys if key not in transitions]
+            if missing:
+                raise ValueError(
+                    f"candidate history is non-contiguous; first missing={missing[0]}"
+                )
+            self.history_keys.append(keys)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        sample = super().__getitem__(index)
+        steps = [
+            tensorize_transition(self.transitions[key])
+            for key in self.history_keys[index]
+        ]
+        sequence = {
+            name: torch.stack([step[name] for step in steps])
+            for name in steps[0]
+        }
+        sample["context"] = build_recovery_model_inputs(sequence)
+        sample["candidate_timestep"] = torch.tensor(
+            self.window_length - 1, dtype=torch.long
+        )
+        return sample
+
+
 def collate_recovery_candidates(
     samples: Sequence[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -123,6 +179,10 @@ def collate_recovery_candidates(
         "teacher_value": torch.zeros(batch_size, max_candidates),
         "metadata": [sample["metadata"] for sample in samples],
     }
+    if "candidate_timestep" in samples[0]:
+        result["candidate_timestep"] = torch.stack(
+            [sample["candidate_timestep"] for sample in samples]
+        )
     for batch_index, sample in enumerate(samples):
         count = len(sample["candidate_actions"])
         result["candidate_mask"][batch_index, :count] = True

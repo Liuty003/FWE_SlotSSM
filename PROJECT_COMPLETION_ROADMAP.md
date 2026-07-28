@@ -1303,6 +1303,13 @@ validation loss从0.06556升至0.09908。该结果证明了初步action sensitiv
 nominal的0.04518。已生成带`SHADOW only`字幕的MP4。该轨迹复用了scorer validation
 episode，因此只证明部署与可视化链路，不作为新泛化证据，仍禁止在线接管。
 
+Level-1统一模型随后实现：冻结v13 Recovery Mamba2，以其32-step、128-D共享temporal
+state同时服务原current heads和新的candidate future head。最佳validation regret
+0.01270，优于nominal 0.01672和随机0.03661；action shuffle使loss增加约94.3%。
+单一checkpoint已包含原48个Recovery tensors和20个candidate tensors，旧参数逐tensor
+完全一致。统一版regret仍略差于独立scorer 0.01057，且motion loss更高，因此下一步
+先扩数据和测试observable-geometry skip，不直接解冻Mamba2。
+
 ---
 
 ## 17. 项目结束检查表

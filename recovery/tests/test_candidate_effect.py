@@ -19,9 +19,12 @@ from recovery.models.candidate_effect_scorer import (
 )
 from recovery.data.candidate_tensor_dataset import (
     RecoveryCandidateDataset,
+    UnifiedRecoveryCandidateDataset,
     collate_recovery_candidates,
 )
 from recovery.tests.test_data_contract import transition
+from recovery.models.recovery_slotssm import RecoverySlotSSM
+from recovery.models.unified_recovery import UnifiedRecoveryModel
 
 
 def candidate_group() -> RecoveryCandidateGroup:
@@ -127,6 +130,45 @@ class CandidateEffectTest(unittest.TestCase):
         losses["total"].backward()
         self.assertTrue(torch.isfinite(losses["total"]))
         self.assertGreater(float(losses["ranking"]), 0.0)
+
+    def test_unified_model_shares_temporal_state_without_changing_old_heads(
+        self,
+    ) -> None:
+        group = candidate_group()
+        transitions = {
+            ("libero_spatial", 9, 0, timestep): transition(timestep)
+            for timestep in range(43)
+        }
+        dataset = UnifiedRecoveryCandidateDataset(
+            [group], transitions, window_length=8
+        )
+        batch = collate_recovery_candidates([dataset[0]])
+        recovery = RecoverySlotSSM(
+            model_dim=32, num_layers=1, backend="gru"
+        ).eval()
+        baseline = recovery(batch["context"])
+        unified = UnifiedRecoveryModel(
+            recovery, candidate_hidden_dim=32
+        ).eval()
+        outputs = unified(
+            batch["context"],
+            nominal_action=batch["nominal_action"],
+            candidate_actions=batch["candidate_actions"],
+            candidate_timestep=batch["candidate_timestep"],
+        )
+        self.assertTrue(
+            torch.equal(outputs["phase_logits"], baseline["phase_logits"])
+        )
+        candidate = outputs["candidate"]
+        self.assertEqual(candidate["candidate_value"].shape, (1, 2))
+        losses = candidate_effect_losses(candidate, batch)
+        losses["total"].backward()
+        self.assertTrue(
+            any(
+                parameter.grad is not None
+                for parameter in unified.candidate_head.parameters()
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -2731,3 +2731,64 @@ init11、190-step运行：
 泛化测试。下一步应在未参与scorer训练和checkpoint选择、但仍属于development范围的
 有效episode上运行同一冻结checkpoint；在增加failure-trigger coverage前继续禁止
 让shadow选择改变执行动作。
+
+### 20.13 Level-1 unified Recovery SlotSSM 首次实现
+
+新增：
+
+```text
+recovery/models/unified_recovery.py
+recovery/data/candidate_tensor_dataset.py
+scripts/train_unified_recovery_candidate_head.py
+```
+
+统一结构不再让candidate scorer独立编码单帧76-D context，而是：
+
+```text
+32-step observable history
+        ↓
+frozen Recovery Mamba2
+        ↓
+shared temporal_state [B,T,128]
+   ├── 原 phase/onset/persistence/verification/handoff/action heads
+   └── candidate action-conditioned future/value head
+```
+
+`UnifiedRecoveryModel`保留原`RecoverySlotSSM`对象，candidate head读取指定时刻或窗口
+最后时刻的temporal state。旧backbone和current heads从v13 checkpoint加载并全部
+冻结，只有candidate head进入optimizer。18项tests证明旧phase logits逐元素不变、
+候选轴permutation equivariant、共享memory候选loss可反向传播。
+
+首次500-step实验：
+
+```text
+/data2/lty/naive-e-slotssm-runs/unified-recovery-candidate-head-v1
+```
+
+按validation regret选择step300：
+
+- unified mean regret=0.01270；
+- nominal=0.01672，uniform random expected=0.03661；
+- best-candidate accuracy=8.3%；
+- validation total loss=0.04450；
+- reverse-shuffle candidate actions后loss=0.08644，增加0.04194（约94.3%）；
+- 独立单帧scorer的best regret=0.01057，因此统一版已优于基线但尚未超过独立scorer；
+- unified motion loss约0.00304，高于独立scorer约0.00055，说明当前temporal state对
+  短视野精确几何位移的保留仍不足。
+
+单checkpoint：
+
+```text
+/data2/lty/naive-e-slotssm-runs/unified-recovery-candidate-head-v1/
+unified-recovery-best.safetensors
+```
+
+包含68个tensors：48个原Recovery SlotSSM tensors和20个candidate-head tensors。
+逐tensor审计确认48个recovery tensors与v13完全一致，因此这一阶段不会造成旧任务
+遗忘。
+
+结论：Level-1统一架构已经证明可实现，candidate future head能够从共享Mamba2 memory
+学习动作敏感排序；但极小数据下尚无统一优于独立scorer的证据。下一步不应立即解冻
+Mamba2，而应先扩大candidate episodes，并测试在temporal state之外拼接最后时刻
+observable geometry的轻量skip connection，判断motion精度差距来自信息压缩还是数据
+不足。
