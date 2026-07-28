@@ -2837,3 +2837,52 @@ geometry skip使对应最佳点motion约改善7%，但regret明显变差；仅�
 feature融合方式导致。当前模型选择仍为v1 `unified-recovery-best.safetensors`，
 保留geometry-skip代码作为可选消融，但不进入shadow/在线控制。下一步回到扩大有效
 candidate episode，而不是继续在同一validation episode上调结构。
+
+### 20.15 Failure-trigger coverage修复与3-episode训练
+
+零候选init9/init0的根因是collector阈值自相矛盾：
+
+```text
+visual rise >= 15px  → 触发LOST GRASP注入
+visual rise >= 20px  → 才承认曾经lifted
+```
+
+两条轨迹峰值分别19.13px和17.12px，因此已由视觉抬升触发注入并真实掉落，却永远
+不能进入failure detected。新增`recovery/detection/failure_trigger.py`：当干预确实
+由`visual-lift`触发时，该触发事件本身构成因果had-lifted证据；仍必须观察到注入后
+visual rise回落才确认drop。fixed-step注入不会凭空获得lift证据，当前测量缺失也不会
+确认drop。
+
+旧日志回放预测init9在step71、init0在step63检测；实际重采完全一致：
+
+```text
+/data2/lty/naive-e-slotssm-runs/recovery-candidates-v2-trigger-fix
+/data2/lty/naive-e-slotssm-runs/recovery-candidate-unified-v3-trigger-fix
+```
+
+- init9：0→12 groups，144/144 valid branches；
+- init0：0→12 groups，144/144 valid branches；
+- 两条均从0%提升为100% failure-detection/candidate coverage；
+- 新增24 groups全部为DESCEND，反映learned phase在这两个状态迅速进入descend；
+- 21项tests通过。
+
+统一训练因此从1个有效train episode / 12 groups扩到3 episodes / 36 groups，固定原
+episode9102为validation：
+
+```text
+/data2/lty/naive-e-slotssm-runs/
+unified-recovery-candidate-head-v5-trigger-coverage
+```
+
+结果没有改善模型选择：
+
+- v5 validation regret=0.01801；
+- nominal=0.01672，旧v1统一模型=0.01270；
+- action shuffle loss delta仍为+0.04954，动作敏感性存在；
+- RETURN 3 groups：模型全部选nominal，regret=0.05244，与nominal相同；
+- DESCEND 9 groups：模型全部选`translate_y_minus`，regret=0.00653，略差于nominal
+  0.00482。
+
+说明只增加同一phase的高度相关数据会造成phase-conditioned choice collapse，并不等于
+有效泛化。正式模型继续保留v1。下一次采集必须采用phase quota而非固定时间间隔，
+并增加独立validation episodes；在此之前不再用episode9102反复选结构。

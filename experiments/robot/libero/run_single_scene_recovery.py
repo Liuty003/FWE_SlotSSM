@@ -38,6 +38,7 @@ from recovery.data.tensor_dataset import (
     build_recovery_model_inputs,
     tensorize_transition,
 )
+from recovery.detection.failure_trigger import visual_lift_drop_evidence
 
 
 def arguments():
@@ -971,10 +972,15 @@ def main():
                 mistake_end = step + args.mistake_steps
             if mistake_end is not None and step >= mistake_end and not failure_detected:
                 if args.failure_detector in ("segmentation-motion", "stage-b-tracked"):
-                    had_lifted = peak_visual_rise >= args.visual_lift_threshold_px
-                    has_dropped = (
-                        current_visual_rise is not None
-                        and current_visual_rise <= args.visual_drop_return_px
+                    had_lifted, has_dropped = visual_lift_drop_evidence(
+                        peak_visual_rise=peak_visual_rise,
+                        current_visual_rise=current_visual_rise,
+                        lift_threshold_px=args.visual_lift_threshold_px,
+                        drop_return_px=args.visual_drop_return_px,
+                        injection_was_visual_lift_triggered=bool(
+                            args.mistake_trigger == "visual-lift"
+                            and effective_mistake_start is not None
+                        ),
                     )
                 else:
                     had_lifted = (

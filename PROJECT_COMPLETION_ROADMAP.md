@@ -1316,6 +1316,12 @@ no-skip原版regret=0.01270；visual+skip=0.01932；visual/no-skip=0.01684。ski
 Level-1 v1。此结果也表明不能继续针对单一validation episode调结构，下一优先级恢复
 为扩大有效candidate episodes和failure-trigger coverage。
 
+failure-trigger coverage根因随后修复：visual-lift在15px已触发注入却要求20px才承认
+lift的矛盾被消除。init9/init0实际检测step与离线回放一致，均从0增至12 candidate
+groups、144/144有效branches。训练扩至3个有效episodes/36 groups后，validation
+regret反而为0.01801，差于nominal 0.01672和旧统一v1 0.01270；新增数据全部集中在
+DESCEND并导致候选选择塌缩。下一采集必须按phase quota平衡，不再只按固定时间间隔。
+
 ---
 
 ## 17. 项目结束检查表

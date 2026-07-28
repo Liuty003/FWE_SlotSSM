@@ -30,8 +30,8 @@ from recovery.models.unified_recovery import UnifiedRecoveryModel
 
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--candidates", type=Path, required=True)
-    parser.add_argument("--transitions", type=Path, required=True)
+    parser.add_argument("--candidates", nargs="+", type=Path, required=True)
+    parser.add_argument("--transitions", nargs="+", type=Path, required=True)
     parser.add_argument("--recovery-checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--window-length", type=int, default=32)
@@ -46,14 +46,23 @@ def arguments() -> argparse.Namespace:
 
 
 def load_data(args):
+    def jsonl_files(paths, filename):
+        return [
+            item
+            for path in paths
+            for item in (
+                [path] if path.is_file() else sorted(path.rglob(filename))
+            )
+        ]
+
     groups = [
         group
-        for path in sorted(args.candidates.rglob("candidates.jsonl"))
+        for path in jsonl_files(args.candidates, "candidates.jsonl")
         for group in read_candidate_jsonl(path)
     ]
     rows = [
         row
-        for path in sorted(args.transitions.rglob("transitions-v2.jsonl"))
+        for path in jsonl_files(args.transitions, "transitions-v2.jsonl")
         for row in read_jsonl(path)
     ]
     transitions = {
