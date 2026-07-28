@@ -1277,6 +1277,14 @@ onset-gated phase提升到63.37%，resolution/handoff F1=0.951；persistence F1�
 0.560。下一实现目标因此明确为observable persistence evidence和
 action-conditioned candidate effect/risk scorer。final-test继续封存。
 
+2026-07-28 Phase 6最小训练闭环已实现：matched candidate schema、可变候选数
+dataset/collator、有界候选生成、action-conditioned effect/value scorer、物理/事件/
+价值/排序联合loss和训练入口均已加入，17项tests通过。它当前只证明接口和梯度链路，
+尚无recovery-state branch数据或排序结果。下一里程碑是复用独立MuJoCo fork env，
+在failure/recovery/verify状态采集4-step matched outcomes，并依次通过restore
+determinism、action sensitivity、held-out ranking和shadow evaluation；final-test
+保持封存。
+
 ---
 
 ## 17. 项目结束检查表

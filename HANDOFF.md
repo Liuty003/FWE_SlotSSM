@@ -2561,3 +2561,41 @@ validation选择onset threshold=0.95。development-test：
 persistence，即在没有privileged contact的线上输入中判断失败是否仍持续。下一步应
 加入policy-observable target-motion/contact-loss proxy，并开始action-conditioned
 candidate effect scorer；不能用打开final-test来指导这些修改。
+
+### 20.9 Recovery candidate effect/risk 最小训练闭环
+
+Phase 6 的代码骨架已建立，目的是先固定因果正确的数据和张量接口，再采集昂贵的
+MuJoCo recovery-state branches。新增：
+
+```text
+recovery/data/candidate_schema.py
+recovery/data/candidate_tensor_dataset.py
+recovery/models/candidate_effect_scorer.py
+scripts/train_recovery_candidate_scorer.py
+recovery/tests/test_candidate_effect.py
+```
+
+当前候选由 nominal、Recovery SlotSSM residual center、有界 xyz / z-rotation 扰动、
+flip-gripper 和 hold 组成，全部裁剪到合法7-D动作范围并数值去重。同一 observation
+下的所有候选必须作为一个 matched group 保存，不能拆散；每个 branch 的 teacher
+outcome包含 EEF/target位移、attach、lift、slip、failure persistence、handoff-ready
+和 task-aware `teacher_value`。teacher outcome只能作为监督，评分器输入仅使用
+schema-v2 policy-observable 76-D context、nominal action和candidate action。
+
+评分器对候选轴 permutation-equivariant，联合学习物理效果、二分类未来事件、候选
+价值及成对排序。可变候选数由显式mask处理，padding和无效仿真分支不进入loss。
+17项 recovery tests、compileall和`git diff --check`已通过。
+
+注意这仍是“可训练闭环”，不是有效性结论：尚未采集recovery-state matched branches，
+未训练checkpoint，也未证明action shuffle degradation或held-out ranking gain。
+当前76-D context是统一模型的可观测输入接口，下一版应允许直接读取
+Recovery SlotSSM连续hidden/slot memory，以实现真正共享时序表示。
+
+下一步严格顺序：
+
+1. 在独立 fork env 中，从 failure/recovery/verify 状态恢复完全相同的MuJoCo state；
+2. 对每组候选短 rollout 4步，写入`candidates.jsonl`及可追溯teacher outcome；
+3. 先采1个failure episode做restore determinism、动作差异和标签审计；
+4. 扩展train/validation candidate groups，但继续封存final-test；
+5. 训练评分器，检查action shuffle、best-candidate accuracy、regret和校准；
+6. 通过离线gate后才做只读shadow ranking，仍不立即改变在线动作。
