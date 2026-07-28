@@ -32,6 +32,12 @@ from recovery.data.candidate_schema import (
     RecoveryCandidateGroup,
 )
 from recovery.models.candidate_effect_scorer import generate_recovery_candidates
+from recovery.models.candidate_effect_scorer import RecoveryCandidateEffectScorer
+from recovery.data.schema import RecoveryTransition, SCHEMA_VERSION
+from recovery.data.tensor_dataset import (
+    build_recovery_model_inputs,
+    tensorize_transition,
+)
 
 
 def arguments():
@@ -120,10 +126,15 @@ def arguments():
     )
     parser.add_argument("--candidate-translation-delta", type=float, default=0.20)
     parser.add_argument("--candidate-rotation-delta", type=float, default=0.15)
+    parser.add_argument(
+        "--candidate-scorer-checkpoint",
+        type=Path,
+        help="Score candidates in shadow mode without changing executed actions.",
+    )
     return parser.parse_args()
 
 
-def annotate(image, phase, step, success=False):
+def annotate(image, phase, step, success=False, shadow_decision=None):
     colors = {
         "NOMINAL": (35, 130, 70), "FORCED ERROR": (190, 45, 45),
         "MISSED GRASP": (205, 35, 35), "FAILURE DETECTED": (235, 95, 20),
@@ -154,6 +165,15 @@ def annotate(image, phase, step, success=False):
         draw.text((145, 7), "replanning from failed grasp", fill=(255, 235, 190))
     elif phase == "FAILURE DETECTED":
         draw.text((145, 7), "target fell after being lifted", fill=(255, 230, 190))
+    if shadow_decision is not None:
+        draw.rectangle((0, 28, canvas.width, 48), fill=(0, 0, 0))
+        name = shadow_decision["selected_name"]
+        value = shadow_decision["selected_value"]
+        draw.text(
+            (8, 32),
+            f"SHADOW only: {name}  value={value:+.3f}",
+            fill=(120, 210, 255),
+        )
     return np.asarray(canvas)
 
 
@@ -439,6 +459,99 @@ class VisualRegraspController:
         return probability, self.streak >= self.confirm_steps
 
 
+class CandidateShadowScorer:
+    """Read-only candidate ranking; never selects the executed action."""
+
+    def __init__(self, checkpoint):
+        state = load_file(checkpoint)
+        hidden_dim = int(state["context_encoder.1.weight"].shape[0])
+        context_dim = int(state["context_encoder.1.weight"].shape[1])
+        self.model = RecoveryCandidateEffectScorer(
+            context_dim=context_dim, hidden_dim=hidden_dim
+        )
+        self.model.load_state_dict(state, strict=True)
+        self.model.eval()
+
+    @torch.inference_mode()
+    def __call__(
+        self,
+        *,
+        task_suite,
+        task_id,
+        episode_id,
+        timestep,
+        instruction,
+        obs,
+        target_mask,
+        nominal,
+        executed,
+        previous_executed_action,
+        translation_delta,
+        rotation_delta,
+    ):
+        names, actions = generate_recovery_candidates(
+            torch.from_numpy(np.asarray(nominal, np.float32)),
+            torch.from_numpy(
+                np.asarray(executed, np.float32)
+                - np.asarray(nominal, np.float32)
+            ),
+            translation_delta=translation_delta,
+            rotation_delta=rotation_delta,
+        )
+        # v1 scorer data has no enriched visual xyz yet, so shadow inference
+        # deliberately matches that training distribution.
+        row = RecoveryTransition(
+            schema_version=SCHEMA_VERSION,
+            source_format="online_candidate_shadow",
+            source_path="online",
+            task_suite=task_suite,
+            task_id=task_id,
+            episode_id=episode_id,
+            timestep=timestep,
+            split="development_test",
+            mode="recovery",
+            online_inputs={
+                "rgb": None,
+                "depth": None,
+                "language_instruction": instruction,
+                "proprio": extract_robot_state(obs),
+                "previous_executed_action": (
+                    None
+                    if previous_executed_action is None
+                    else np.asarray(
+                        previous_executed_action, np.float32
+                    ).tolist()
+                ),
+                "nominal_action": np.asarray(nominal, np.float32).tolist(),
+                "target_mask": None,
+                "target_mask_measurement": target_mask,
+                "visual_target_xyz": None,
+                "visual_target_xyz_valid": False,
+                "observation_validity": {},
+            },
+            labels={
+                "executed_action": np.asarray(executed, np.float32).tolist()
+            },
+        )
+        row.validate()
+        step_tensors = tensorize_transition(row)
+        context = build_recovery_model_inputs(step_tensors)[None]
+        outputs = self.model(context, torch.from_numpy(
+            np.asarray(nominal, np.float32)
+        )[None], actions[None])
+        values = outputs["candidate_value"][0]
+        selected = int(values.argmax())
+        return {
+            "candidate_names": names,
+            "candidate_actions": actions.tolist(),
+            "predicted_values": values.tolist(),
+            "selected_index": selected,
+            "selected_name": names[selected],
+            "selected_value": float(values[selected]),
+            "execution_changed": False,
+        }
+
+
 def collect_candidate_group(
     *,
     fork_env,
@@ -720,6 +833,14 @@ def main():
         ),
         "candidate_branch_steps": args.candidate_branch_steps,
         "candidate_max_forks": args.candidate_max_forks,
+        "candidate_scorer_checkpoint": (
+            str(args.candidate_scorer_checkpoint.resolve())
+            if args.candidate_scorer_checkpoint is not None else None
+        ),
+        "candidate_scorer_mode": (
+            "shadow_only"
+            if args.candidate_scorer_checkpoint is not None else None
+        ),
         "completed": False, "success": False,
     }
     write_json(metadata_path, metadata)
@@ -748,6 +869,10 @@ def main():
             args.visual_regrasp_checkpoint, args.visual_regrasp_confirm_steps
         )
         if args.visual_regrasp_checkpoint is not None else None
+    )
+    candidate_shadow_scorer = (
+        CandidateShadowScorer(args.candidate_scorer_checkpoint)
+        if args.candidate_scorer_checkpoint is not None else None
     )
     if learned_recovery is not None and args.visual_3d_audit is None:
         raise ValueError("--visual-3d-audit is required for learned recovery")
@@ -796,6 +921,9 @@ def main():
     recovery_completed = False
     visual_regrasp_settling = False
     peak_target_lift = 0.0
+    previous_executed_action = None
+    shadow_steps = shadow_matches = shadow_matched_groups = 0
+    shadow_regret_sum = 0.0
     try:
         for step in range(args.max_steps):
             image = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
@@ -808,6 +936,8 @@ def main():
             visual_target_xyz = None
             learned_phase_probabilities = None
             visual_regrasp_probability = None
+            shadow_decision = None
+            candidate_group = None
             current_target_lift = (
                 float(np.asarray(obs[target_key], np.float32)[2]) - initial_target_z
             )
@@ -1003,6 +1133,25 @@ def main():
                 "CLOSE GRIPPER",
                 "VERIFY LIFT",
             )
+            if (
+                candidate_shadow_scorer is not None
+                and phase in candidate_phases
+            ):
+                shadow_decision = candidate_shadow_scorer(
+                    task_suite=args.task_suite,
+                    task_id=args.task_id,
+                    episode_id=dataset_episode_id,
+                    timestep=step,
+                    instruction=task.language,
+                    obs=obs,
+                    target_mask=target_mask,
+                    nominal=nominal,
+                    executed=executed,
+                    previous_executed_action=previous_executed_action,
+                    translation_delta=args.candidate_translation_delta,
+                    rotation_delta=args.candidate_rotation_delta,
+                )
+                shadow_steps += 1
             should_collect_candidates = (
                 fork_env is not None
                 and candidate_path is not None
@@ -1043,11 +1192,63 @@ def main():
                         + "\n"
                     )
                 candidates_written += 1
+                if shadow_decision is not None:
+                    teacher_values = [
+                        (
+                            float(outcome["teacher_value"])
+                            if valid else None
+                        )
+                        for valid, outcome in zip(
+                            candidate_group.outcome_valid,
+                            candidate_group.teacher_outcomes,
+                        )
+                    ]
+                    valid_values = [
+                        value for value in teacher_values if value is not None
+                    ]
+                    selected = shadow_decision["selected_index"]
+                    actual_best = max(
+                        range(len(teacher_values)),
+                        key=lambda index: (
+                            float("-inf")
+                            if teacher_values[index] is None
+                            else teacher_values[index]
+                        ),
+                    )
+                    selected_teacher = teacher_values[selected]
+                    regret = (
+                        None
+                        if selected_teacher is None
+                        else max(valid_values) - selected_teacher
+                    )
+                    shadow_decision.update(
+                        {
+                            "teacher_values": teacher_values,
+                            "actual_best_index": actual_best,
+                            "actual_best_name": candidate_group.candidate_names[
+                                actual_best
+                            ],
+                            "matched_actual_best": selected == actual_best,
+                            "teacher_regret": regret,
+                        }
+                    )
+                    shadow_matched_groups += 1
+                    shadow_matches += int(selected == actual_best)
+                    if regret is not None:
+                        shadow_regret_sum += regret
             before_eef = np.asarray(obs["robot0_eef_pos"], np.float32)
             next_obs, reward, done, info = env.step(executed.tolist())
             success = bool(env.check_success())
             after_eef = np.asarray(next_obs["robot0_eef_pos"], np.float32)
-            frames.append(annotate(image, phase, step, success))
+            frames.append(
+                annotate(
+                    image,
+                    phase,
+                    step,
+                    success,
+                    shadow_decision=shadow_decision,
+                )
+            )
             record = {
                 "timestep": step, "phase": phase,
                 "failure_injected": phase in ("FORCED ERROR", "MISSED GRASP", "LOST GRASP"),
@@ -1070,6 +1271,7 @@ def main():
                     if learned_phase_probabilities is not None else None
                 ),
                 "visual_regrasp_probability": visual_regrasp_probability,
+                "candidate_shadow": shadow_decision,
                 "eef_delta_m": (after_eef - before_eef).tolist(),
                 "robot_state_before": extract_robot_state(obs),
                 "robot_state_after": extract_robot_state(next_obs),
@@ -1127,6 +1329,7 @@ def main():
                 with expert_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(expert_record, ensure_ascii=False) + "\n")
             transitions_written += 1
+            previous_executed_action = executed.copy()
             obs = next_obs
             if success:
                 for _ in range(10):
@@ -1162,6 +1365,16 @@ def main():
         "candidate_groups": candidates_written,
         "candidates_jsonl": (
             str(candidate_path.resolve()) if candidate_path is not None else None
+        ),
+        "candidate_shadow_steps": shadow_steps,
+        "candidate_shadow_matched_groups": shadow_matched_groups,
+        "candidate_shadow_best_accuracy": (
+            shadow_matches / shadow_matched_groups
+            if shadow_matched_groups else None
+        ),
+        "candidate_shadow_mean_teacher_regret": (
+            shadow_regret_sum / shadow_matched_groups
+            if shadow_matched_groups else None
         ),
         "recovery_claim": (
             "successful nominal negative episode; no failure was injected"

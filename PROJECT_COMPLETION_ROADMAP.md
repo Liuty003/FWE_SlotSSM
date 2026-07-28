@@ -1298,6 +1298,11 @@ RETURN TO BOWL状态采得23/23有效4-step branches；同状态不同动作的t
 validation loss从0.06556升至0.09908。该结果证明了初步action sensitivity和排序
 收益，但episode数远不足，且validation未覆盖CLOSE/VERIFY，仍禁止在线控制。
 
+只读shadow部署链随后跑通：81个恢复帧实时显示候选选择，日志确认0帧修改实际动作；
+其中4个状态有真实fork outcome，shadow命中2/4，mean regret 0.01846，优于同状态
+nominal的0.04518。已生成带`SHADOW only`字幕的MP4。该轨迹复用了scorer validation
+episode，因此只证明部署与可视化链路，不作为新泛化证据，仍禁止在线接管。
+
 ---
 
 ## 17. 项目结束检查表

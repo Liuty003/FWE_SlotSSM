@@ -2687,3 +2687,47 @@ step400按validation regret优先选为best：
 不能据此开启在线候选控制。下一步需改进failure-trigger coverage并再采至少3–5个
 有效train、2–3个validation episodes；同时应把当前手工teacher value分解为
 phase-aware progress与安全分数做消融，避免utility定义主导结论。
+
+### 20.12 首次只读 online shadow ranking 与MP4
+
+`run_single_scene_recovery.py` 新增：
+
+```text
+--candidate-scorer-checkpoint
+```
+
+提供checkpoint后，每个恢复帧都从当时的observable 76-D context生成并评分候选，
+但只记录结果，`execution_changed=false`，主环境仍执行原recovery action。视频用
+第二行蓝色字幕明确显示：
+
+```text
+SHADOW only: <candidate name> value=<predicted value>
+```
+
+首次shadow产物：
+
+```text
+/data2/lty/naive-e-slotssm-runs/recovery-candidate-shadow-v1/
+task9-dataset9200.mp4
+/data2/lty/naive-e-slotssm-runs/recovery-candidate-shadow-v1/
+task9-dataset9200/steps.jsonl
+/data2/lty/naive-e-slotssm-runs/recovery-candidate-shadow-branches-v1/
+task9-dataset9200/candidates.jsonl
+```
+
+init11、190-step运行：
+
+- 81个恢复帧执行shadow评分，0帧修改实际动作；
+- 4个时刻同时执行真实MuJoCo branches；
+- shadow best命中2/4；
+- shadow mean teacher regret=0.01846；
+- 同4状态始终选nominal的mean regret=0.04518；
+- 具体包含一次正确选择`translate_x_plus`、一次正确选择`nominal`，以及两次错误；
+- MP4为H.264、256×256、20 FPS、190帧、9.5秒，字幕已人工检查；
+- 主任务在190步内未恢复成功，因此本结果只说明候选排序shadow收益，不说明闭环
+  成功率提升。
+
+注意init11曾是v1 scorer的validation episode，这次是部署链路回放/可视化，不是新的
+泛化测试。下一步应在未参与scorer训练和checkpoint选择、但仍属于development范围的
+有效episode上运行同一冻结checkpoint；在增加failure-trigger coverage前继续禁止
+让shadow选择改变执行动作。
