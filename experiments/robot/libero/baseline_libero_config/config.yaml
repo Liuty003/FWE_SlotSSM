@@ -1,0 +1,5 @@
+benchmark_root: /data/lty/code/naive-e-slotssm/experiments/robot/libero/libero/libero
+bddl_files: /data/lty/code/naive-e-slotssm/experiments/robot/libero/libero/libero/bddl_files
+init_states: /data/lty/code/naive-e-slotssm/experiments/robot/libero/libero/libero/init_files
+datasets: /data/lty/code/naive-e-slotssm/experiments/robot/libero/libero/datasets
+assets: /data/lty/code/naive-e-slotssm/experiments/robot/libero/libero/libero/assets

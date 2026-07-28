@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# This compact model needs only one GPU. Physical GPU 2 is preferred; GPU 3 is prohibited.
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2}"
+export PYTHONPATH="${PYTHONPATH:-$(pwd)}"
+
+.conda/envs/openvla-a/bin/python scripts/train_counterfactual_slot_predictor.py \
+  --data-dir /data2/lty/naive-e-slotssm-runs/counterfactual-slots-spatial-h4 \
+  --output-dir /data2/lty/naive-e-slotssm-runs/counterfactual-predictor-spatial-h4 \
+  --train-tasks 0,1,2,3,4,5,6,7 \
+  --val-task 8 \
+  --steps 5000 \
+  --batch-forks 4 \
+  --lr 2e-4 \
+  --ranking-margin 0.002 \
+  --ranking-weight 0.2 \
+  --branch-delta-weight 0.5 \
+  --identity-weight 0.05 \
+  --log-every 20 \
+  --eval-every 200 \
+  --save-every 500

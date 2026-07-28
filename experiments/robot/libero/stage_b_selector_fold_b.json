@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "protocol": "compositional_reference_seen_fold_b",
+  "relation_order": ["between", "in", "next_to", "on", "table_center"],
+  "hidden_dim": 256,
+  "heads": 8,
+  "language_dim": 1152,
+  "geometry_dimension": 40,
+  "mask_threshold": 0.5,
+  "component_proposals": true,
+  "bowl_checkpoint": "/data2/lty/naive-e-slotssm-runs/stage-b-bowl-proposals-fold-b/bowl-proposals-step-000300.safetensors",
+  "reference_checkpoint": "/data2/lty/naive-e-slotssm-runs/stage-b-counterfactual-ranking-fold-b-200/relation-query-step-000200.safetensors",
+  "geometry_checkpoint": "/data2/lty/naive-e-slotssm-runs/stage-b-selector-fold-b/geometry-scorer.safetensors"
+}

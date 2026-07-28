@@ -1,0 +1,72 @@
+{
+  "schema_version": 2,
+  "task_suite": "libero_spatial",
+  "shared_roles": {
+    "target": "akita_black_bowl_1",
+    "distractor": "akita_black_bowl_2",
+    "goal": "plate_1",
+    "robot": "robot"
+  },
+  "tasks": {
+    "0": {
+      "relation": "between",
+      "references": ["plate_1", "glazed_rim_porcelain_ramekin_1"],
+      "target_init_predicate": "(On akita_black_bowl_1 main_table_between_plate_ramekin_region)",
+      "counterfactual": {"target": "akita_black_bowl_2", "relation": "next_to", "references": ["glazed_rim_porcelain_ramekin_1"], "init_predicate": "(On akita_black_bowl_2 main_table_next_to_ramekin_region)"}
+    },
+    "1": {
+      "relation": "next_to",
+      "references": ["glazed_rim_porcelain_ramekin_1"],
+      "target_init_predicate": "(On akita_black_bowl_1 main_table_next_to_ramekin_region)",
+      "counterfactual": {"target": "akita_black_bowl_2", "relation": "next_to", "references": ["cookies_1"], "init_predicate": "(On akita_black_bowl_2 main_table_next_to_box_region)"}
+    },
+    "2": {
+      "relation": "table_center",
+      "references": [],
+      "target_init_predicate": "(On akita_black_bowl_1 main_table_table_center)",
+      "counterfactual": {"target": "akita_black_bowl_2", "relation": "next_to", "references": ["plate_1"], "init_predicate": "(On akita_black_bowl_2 main_table_next_to_plate_region)"}
+    },
+    "3": {
+      "relation": "on",
+      "references": ["cookies_1"],
+      "target_init_predicate": "(On akita_black_bowl_1 cookies_1)",
+      "counterfactual": {"target": "akita_black_bowl_2", "relation": "on", "references": ["wooden_cabinet_1"], "init_predicate": "(On akita_black_bowl_2 wooden_cabinet_1_top_side)"}
+    },
+    "4": {
+      "relation": "in",
+      "references": ["wooden_cabinet_1"],
+      "target_init_predicate": "(In akita_black_bowl_1 wooden_cabinet_1_top_region)",
+      "counterfactual": {"target": "akita_black_bowl_2", "relation": "on", "references": ["wooden_cabinet_1"], "init_predicate": "(On akita_black_bowl_2 wooden_cabinet_1_top_side)"}
+    },
+    "5": {
+      "relation": "on",
+      "references": ["glazed_rim_porcelain_ramekin_1"],
+      "target_init_predicate": "(On akita_black_bowl_1 glazed_rim_porcelain_ramekin_1)",
+      "counterfactual": {"target": "akita_black_bowl_2", "relation": "on", "references": ["cookies_1"], "init_predicate": "(On akita_black_bowl_2 cookies_1)"}
+    },
+    "6": {
+      "relation": "next_to",
+      "references": ["cookies_1"],
+      "target_init_predicate": "(On akita_black_bowl_1 main_table_next_to_box_region)",
+      "counterfactual": {"target": "akita_black_bowl_2", "relation": "on", "references": ["flat_stove_1"], "init_predicate": "(On akita_black_bowl_2 flat_stove_1_cook_region)"}
+    },
+    "7": {
+      "relation": "on",
+      "references": ["flat_stove_1"],
+      "target_init_predicate": "(On akita_black_bowl_1 flat_stove_1_cook_region)",
+      "counterfactual": {"target": "akita_black_bowl_2", "relation": "on", "references": ["wooden_cabinet_1"], "init_predicate": "(On akita_black_bowl_2 wooden_cabinet_1_top_side)"}
+    },
+    "8": {
+      "relation": "next_to",
+      "references": ["plate_1"],
+      "target_init_predicate": "(On akita_black_bowl_1 main_table_next_to_plate_region)",
+      "counterfactual": {"target": "akita_black_bowl_2", "relation": "next_to", "references": ["glazed_rim_porcelain_ramekin_1"], "init_predicate": "(On akita_black_bowl_2 main_table_next_to_ramekin_region)"}
+    },
+    "9": {
+      "relation": "on",
+      "references": ["wooden_cabinet_1"],
+      "target_init_predicate": "(On akita_black_bowl_1 wooden_cabinet_1_top_side)",
+      "counterfactual": {"target": "akita_black_bowl_2", "relation": "on", "references": ["flat_stove_1"], "init_predicate": "(On akita_black_bowl_2 flat_stove_1_cook_region)"}
+    }
+  }
+}
