@@ -1,6 +1,6 @@
 # naive-e-slotssm / Failure-Aware Embodied-SlotSSM 交接文档
 
-更新时间：2026-07-28（Asia/Shanghai）
+更新时间：2026-07-30（Asia/Shanghai）
 
 本文写给一个完全没有聊天上下文的新会话。请先完整阅读本文，再阅读文末列出的核心设计文档。不要直接从最新的恢复控制实验继续堆规则。
 
@@ -54,6 +54,8 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 6. `CURRENT_PROGRESS_2026-07-24.md`：当前能力、产物、边界和下一步的集中总结。
 7. `recovery_expert_dataset_schema.md`：已有恢复 expert 数据格式。
 8. `daily_progress/2026-07-21.md`：早期详细工作记录。
+9. `LIBERO10_NATURAL_FAILURE_AUDIT.md`：100条标准自然基线、17条重点失败分类
+   和当前主任务选择。
 
 ## 4. 当前系统由什么组成
 
@@ -2908,3 +2910,29 @@ recoverable-deviation-task4-episode0-v2.mp4
 
 下一步应先把task4的纯视觉失败检测跑通，再为“掉回抽屉”增加
 RETREAT/REORIENT阶段并采集该任务专用训练数据。
+
+### 20.17 LIBERO-10自然失败基线与路线调整
+
+主实验路线已从“人为破坏本来成功的轨迹”调整为标准benchmark自然失败恢复：
+
+```text
+冻结OpenVLA
+vs.
+冻结OpenVLA + Failure-Aware SlotSSM
+```
+
+新增本地模型：
+
+```text
+/data2/lty/models/openvla-7b-finetuned-libero-object
+/data2/lty/models/openvla-7b-finetuned-libero-10
+```
+
+LIBERO-10完成10 tasks × 10 initial states，共100条无故障注入基线；100个MP4均可读。
+总体49成功、51失败，成功率49.0%。重点审计task4、task6、task9的17条失败后，
+建议以task6为第一主任务：它同时包含第一抓取停滞、第一子目标完成后未切换到布丁、
+不稳定放置和近目标谓词失败。
+
+完整统计和逐episode行为分类见`LIBERO10_NATURAL_FAILURE_AUDIT.md`。下一步不是继续
+盲目扩充rollout，而是标注task6子目标完成/停滞时刻，先验证自然失败的oracle可恢复
+上限，再训练共享时序状态的SlotSSM进度、失败和候选未来头。
