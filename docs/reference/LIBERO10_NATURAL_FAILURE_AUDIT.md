@@ -155,3 +155,34 @@ Close(microwave_1)
 3. 先建立无需SlotSSM的规则/状态oracle上限，确认自然失败在剩余步数内可恢复；
 4. 再训练共享时序状态的SlotSSM进度、失败和候选未来头；
 5. 最终报告标准无扰动环境中的成功率提升，故障注入只作消融。
+
+## 7. Task6 Oracle阶段切换预检
+
+已实现`experiments/robot/libero/run_task6_oracle_recovery.py`。Oracle只读取正式任务
+谓词`On(porcelain_mug_1, plate_1)`；连续5帧成立后，将OpenVLA语言从完整指令切换为：
+
+```text
+put the chocolate pudding to the right of the plate
+```
+
+Oracle不读取未来、不直接输出或修改动作。5个完整初始状态的预检结果：
+
+| Episode | 原始OpenVLA | Oracle切换 | 切换步 | 最终步数 |
+|---:|---:|---:|---:|---:|
+| 0 | 成功 | 成功 | 145 | 242 |
+| 1 | 失败 | 成功 | 121 | 195 |
+| 3 | 失败 | 失败 | 122 | 520 |
+| 6 | 失败 | 成功 | 134 | 257 |
+| 7 | 失败 | 成功 | 131 | 225 |
+
+同5状态由1/5提升到4/5，恢复了3条标准benchmark自然失败，且保留原成功episode0。
+episode3证明阶段判断并非万能：它正确切换到布丁子目标，但后续接近/抓取仍失败。
+
+产物：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-oracle-stage-switch-v1
+```
+
+这是开发集预检，不是最终统计结论。下一步应在完整开发集完成配对对照，并用未查看的
+episode10–19验证；学习模型最终必须用视觉Slot/时序状态替代仿真谓词。

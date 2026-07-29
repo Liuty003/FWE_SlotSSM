@@ -2936,3 +2936,20 @@ LIBERO-10完成10 tasks × 10 initial states，共100条无故障注入基线；
 完整统计和逐episode行为分类见`LIBERO10_NATURAL_FAILURE_AUDIT.md`。下一步不是继续
 盲目扩充rollout，而是标注task6子目标完成/停滞时刻，先验证自然失败的oracle可恢复
 上限，再训练共享时序状态的SlotSSM进度、失败和候选未来头。
+
+### 20.18 Task6自然失败Oracle恢复上限预检
+
+新增`run_task6_oracle_recovery.py`：连续5帧满足正式
+`On(porcelain_mug_1, plate_1)`谓词后，仅将OpenVLA提示切换为布丁子目标，Oracle
+不产生动作。episode0/1/3/6/7配对预检由原始1/5成功提升为4/5，恢复episode1、6、7，
+且保留episode0成功；episode3虽正确切换仍失败，说明后续动作能力也是独立瓶颈。
+
+成功视频与逐步日志位于：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-oracle-stage-switch-v1
+```
+
+该结果首次在无人工故障注入的标准benchmark自然失败上证明：正确的持续子目标状态
+和阶段切换本身可以显著提高冻结OpenVLA成功率。当前仍是使用仿真谓词的开发集上限，
+不能作为学习SlotSSM结果；下一步是完成配对开发集，并以视觉Slot替代Oracle状态。
