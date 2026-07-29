@@ -101,6 +101,16 @@ def arguments():
     parser.add_argument("--regrasp-gain", type=float, default=8.0)
     parser.add_argument("--regrasp-close-steps", type=int, default=8)
     parser.add_argument("--regrasp-lift-threshold-m", type=float, default=0.06)
+    parser.add_argument(
+        "--regrasp-return-offset",
+        default="-0.03,0.06,0.055",
+        help="EEF xyz offset from the target during the return phase.",
+    )
+    parser.add_argument(
+        "--regrasp-descend-offset",
+        default="-0.03,0.06,0.006",
+        help="EEF xyz offset from the target at the task-specific grasp pose.",
+    )
     parser.add_argument("--recovery-highlight-steps", type=int, default=35)
     parser.add_argument("--center-crop", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--device-map", default="balanced_low_0")
@@ -703,6 +713,18 @@ def main():
     mistake_action = np.asarray([float(value) for value in args.mistake_action.split(",")], np.float32)
     if mistake_action.shape != (7,):
         raise ValueError("mistake-action must contain seven comma-separated values")
+    regrasp_return_offset = np.asarray(
+        [float(value) for value in args.regrasp_return_offset.split(",")],
+        np.float32,
+    )
+    regrasp_descend_offset = np.asarray(
+        [float(value) for value in args.regrasp_descend_offset.split(",")],
+        np.float32,
+    )
+    if regrasp_return_offset.shape != (3,):
+        raise ValueError("--regrasp-return-offset must contain three comma-separated values")
+    if regrasp_descend_offset.shape != (3,):
+        raise ValueError("--regrasp-descend-offset must contain three comma-separated values")
     suite = benchmark.get_benchmark_dict()[args.task_suite]()
     dataset_episode_id = (
         args.episode_id
@@ -824,6 +846,8 @@ def main():
         ),
         "visual_regrasp_confirm_steps": args.visual_regrasp_confirm_steps,
         "visual_regrasp_settle_height_m": args.visual_regrasp_settle_height_m,
+        "regrasp_return_offset": regrasp_return_offset.tolist(),
+        "regrasp_descend_offset": regrasp_descend_offset.tolist(),
         "expert_dataset_dir": (
             str(args.expert_dataset_dir.resolve())
             if args.expert_dataset_dir is not None else None
@@ -1026,10 +1050,8 @@ def main():
                         and previous_recovery_phase != "lift"
                     ):
                         visual_regrasp.reset()
-                # Scene-specific Panda grasp offset measured from the verified
-                # nominal task-9 trajectory. This is intentionally overfit.
                 if recovery_phase == "return":
-                    desired = bowl + np.asarray([-0.03, 0.06, 0.055], np.float32)
+                    desired = bowl + regrasp_return_offset
                     delta = desired - eef
                     executed = np.zeros(7, np.float32)
                     executed[:3] = np.clip(args.regrasp_gain * delta, -0.8, 0.8)
@@ -1041,7 +1063,7 @@ def main():
                     ):
                         recovery_phase, recovery_phase_step = "descend", 0
                 elif recovery_phase == "descend":
-                    desired = bowl + np.asarray([-0.03, 0.06, 0.006], np.float32)
+                    desired = bowl + regrasp_descend_offset
                     delta = desired - eef
                     executed = np.zeros(7, np.float32)
                     executed[:3] = np.clip(args.regrasp_gain * delta, -0.5, 0.5)

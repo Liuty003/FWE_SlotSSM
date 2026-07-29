@@ -2886,3 +2886,25 @@ unified-recovery-candidate-head-v5-trigger-coverage
 说明只增加同一phase的高度相关数据会造成phase-conditioned choice collapse，并不等于
 有效泛化。正式模型继续保留v1。下一次采集必须采用phase quota而非固定时间间隔，
 并增加独立validation episodes；在此之前不再用episode9102反复选结构。
+
+### 20.16 新场景task4首条受扰成功轨迹
+
+阶段目标从扩充task9改为先跑通不同任务。选用LIBERO Spatial task4：
+“从木柜顶层抽屉取出黑碗并放到盘子上”，init0正常OpenVLA基线111步成功。
+
+`run_single_scene_recovery.py`新增可配置的`--regrasp-return-offset`和
+`--regrasp-descend-offset`，解除task9抓取偏移硬编码。掉碗实验可在step70正确检测，
+但碗落回抽屉后受柜体碰撞约束，原姿态无法二次抓取；该故障需要新增退出抽屉和重调
+姿态阶段，不能仅调xyz偏移。
+
+可逆的抓取前轨迹偏移已跑通：step20起执行3步
+`[-0.4, 0.4, 0.2, 0, 0, 0, -1]`，step23交还OpenVLA，最终step124成功。
+视频：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task4-new-scene-v1/
+recoverable-deviation-task4-episode0-v2.mp4
+```
+
+下一步应先把task4的纯视觉失败检测跑通，再为“掉回抽屉”增加
+RETREAT/REORIENT阶段并采集该任务专用训练数据。
