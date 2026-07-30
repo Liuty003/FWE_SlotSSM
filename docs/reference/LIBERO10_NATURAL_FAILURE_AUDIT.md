@@ -231,3 +231,8 @@ task6专用mask监督角色Slot随后解决了该问题：开发测试episode7�
 完整520帧无误触发，frame balanced accuracy 99.15%。在线运行中episode6、7最终成功，
 episode9从未切换。该模型推理只读取RGB；杯/盘instance masks和仿真`On`谓词只用于
 训练监督。当前仍需加入grounded role slots上的Mamba2和状态回退，再运行保留集。
+
+Grounded role slots现已接入Mamba2完成/回退双头和可逆阶段状态机。安全门控后继续保持
+episode8/9无误触发；episode28离线回退真值step236、预测step237。在线episode28在
+step125切换并于255步成功，因新动作轨迹没有再次掉落，未实际触发回退。因此在线回退
+恢复仍需专门的可复现滑落开发轨迹验证，不能用本次成功替代该证据。

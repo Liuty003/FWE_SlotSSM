@@ -3078,3 +3078,34 @@ mask和仿真谓词只作训练监督；推理输入仍只有RGB。20个开发/�
 这首次同时保住episode6/7的在线恢复并消除episode9假阳性，证明对象角色监督比单纯更换
 GRU/Mamba2更关键。当前关系头仍是单帧模型加连续5帧确认；下一步把两个grounded role
 slots作为Mamba2输入，加入“完成后又掉落”的状态回退头，再决定是否达到保留集门槛。
+
+### 20.24 Grounded Role Mamba2与可逆阶段状态
+
+新增`precompute_task6_grounded_role_sequences.py`，从20条轨迹提取每帧两个96维
+grounded role slots；新增`train_task6_grounded_role_mamba.py`，共享Mamba2主干输出：
+
+1. 当前杯—盘关系是否完成；
+2. 已完成后是否发生关系失效/掉落。
+
+为防止时序模型再次仅凭任务进度误触发，采用安全门控：
+
+```text
+进入分数 = min(Mamba completion, grounded relation)
+回退分数 = min(Mamba rollback, 1 - grounded relation)
+```
+
+进入与回退均需连续5帧，回退阈值提高到0.8。离线结果保持episode6/7可检出、
+episode8/9不误触发；在训练hard case episode28上，真值回退step236，Mamba2预测
+step237。`run_task6_oracle_recovery.py`已加入可逆状态机，可在
+`FULL TASK ↔ PUDDING SUBGOAL`之间双向切换。
+
+proper temporal在线episode28在step125切换，最终255步成功；该新策略没有重现原Oracle
+轨迹中的掉落，因此没有实际触发回退。这是更好的任务结果，但只能证明回退链路已离线
+对齐、在线可运行，不能声称已完成在线掉落恢复。视频：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-grounded-temporal-online-v2/task6-episode28.mp4
+```
+
+下一步应构造不使用仿真状态作为输入的可复现掉落/滑落开发轨迹，在线验证回退后重新
+抓杯；完成后再决定是否冻结开发并运行episode10–19。

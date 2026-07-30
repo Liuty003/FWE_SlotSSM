@@ -63,6 +63,30 @@ class StableBooleanLatch:
         return self.latched
 
 
+class ReversibleStageLatch:
+    """Enter and leave a subgoal after separately confirmed evidence."""
+
+    def __init__(self, enter_steps: int, rollback_steps: int):
+        self.enter_steps = enter_steps
+        self.rollback_steps = rollback_steps
+        self.enter_run = 0
+        self.rollback_run = 0
+        self.switched = False
+
+    def update(self, enter: bool, rollback: bool) -> bool:
+        if not self.switched:
+            self.enter_run = self.enter_run + 1 if enter else 0
+            if self.enter_run >= self.enter_steps:
+                self.switched = True
+                self.rollback_run = 0
+        else:
+            self.rollback_run = self.rollback_run + 1 if rollback else 0
+            if self.rollback_run >= self.rollback_steps:
+                self.switched = False
+                self.enter_run = 0
+        return self.switched
+
+
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -82,6 +106,10 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--learned-stage-checkpoint", type=Path)
     parser.add_argument("--slot-checkpoint", type=Path)
     parser.add_argument("--grounded-role-checkpoint", type=Path)
+    parser.add_argument("--grounded-temporal-checkpoint", type=Path)
+    parser.add_argument("--rollback-threshold", type=float, default=0.8)
+    parser.add_argument("--rollback-confirm-steps", type=int, default=5)
+    parser.add_argument("--temporal-window", type=int, default=128)
     parser.add_argument(
         "--center-crop", action=argparse.BooleanOptionalAction, default=True
     )
@@ -126,6 +154,8 @@ def main() -> None:
         raise ValueError("use --no-oracle-stage-switch with grounded role switching")
     if args.learned_stage_checkpoint and args.grounded_role_checkpoint:
         raise ValueError("choose one learned stage checkpoint")
+    if args.grounded_temporal_checkpoint and not args.grounded_role_checkpoint:
+        raise ValueError("grounded temporal mode requires grounded role checkpoint")
     from libero.libero import benchmark, get_libero_path
     from libero.libero.envs import OffScreenRenderEnv
 
@@ -188,6 +218,10 @@ def main() -> None:
             str(args.grounded_role_checkpoint)
             if args.grounded_role_checkpoint else None
         ),
+        "grounded_temporal_checkpoint": (
+            str(args.grounded_temporal_checkpoint)
+            if args.grounded_temporal_checkpoint else None
+        ),
         "completed": False,
         "success": False,
     }
@@ -200,6 +234,9 @@ def main() -> None:
     learned_hidden = learned_past_slots = None
     learned_threshold = None
     grounded_transform = None
+    grounded_temporal = None
+    grounded_role_history = []
+    grounded_probability_history = []
     if args.learned_stage_checkpoint:
         from prismatic.extern.hf.modeling_prismatic import (
             OpenVLAForActionPrediction_SlotAtt,
@@ -241,13 +278,28 @@ def main() -> None:
             transforms.Normalize((.485, .456, .406), (.229, .224, .225)),
         ])
         metadata["learned_threshold"] = learned_threshold
+        if args.grounded_temporal_checkpoint:
+            from scripts.train_task6_grounded_role_mamba import GroundedRoleMamba
+
+            grounded_temporal = GroundedRoleMamba(
+                backend="mamba2"
+            ).to(vision_device).eval()
+            grounded_temporal.load_state_dict(
+                load_file(args.grounded_temporal_checkpoint)
+            )
+            metadata["rollback_threshold"] = args.rollback_threshold
+            metadata["rollback_confirm_steps"] = args.rollback_confirm_steps
         write_json(metadata_path, metadata)
     noop = np.asarray([0, 0, 0, 0, 0, 0, -1], np.float32)
     for _ in range(args.wait_steps):
         obs, _, done, _ = env.step(noop.tolist())
 
     latch = StableBooleanLatch(args.subgoal_confirm_steps)
+    reversible_latch = ReversibleStageLatch(
+        args.subgoal_confirm_steps, args.rollback_confirm_steps
+    )
     switch_step = None
+    rollback_steps = []
     frames: list[np.ndarray] = []
     success = False
     try:
@@ -258,6 +310,7 @@ def main() -> None:
                 )
             )
             learned_probability = None
+            learned_rollback_probability = None
             if learned_model is not None:
                 raw_image = Image.fromarray(
                     np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
@@ -265,10 +318,30 @@ def main() -> None:
                 if grounded_transform is not None:
                     pixels = grounded_transform(raw_image)[None].to(vision_device)
                     with torch.inference_mode():
-                        _, relation_logits, _ = learned_model(pixels)
-                        learned_probability = float(
-                            torch.sigmoid(relation_logits[0])
-                        )
+                        _, relation_logits, role_slots = learned_model(pixels)
+                        single_probability = torch.sigmoid(relation_logits[0])
+                        if grounded_temporal is None:
+                            learned_probability = float(single_probability)
+                        else:
+                            grounded_role_history.append(role_slots[0])
+                            grounded_probability_history.append(single_probability)
+                            roles = torch.stack(
+                                grounded_role_history[-args.temporal_window:]
+                            )[None]
+                            singles = torch.stack(
+                                grounded_probability_history[-args.temporal_window:]
+                            )[None]
+                            completion_logits, rollback_logits = grounded_temporal(
+                                roles, singles
+                            )
+                            learned_probability = float(torch.minimum(
+                                completion_logits[0, -1].sigmoid(),
+                                single_probability,
+                            ))
+                            learned_rollback_probability = float(torch.minimum(
+                                rollback_logits[0, -1].sigmoid(),
+                                1 - single_probability,
+                            ))
                 else:
                     pixels = processor.image_processor.apply_transform(
                         raw_image
@@ -293,9 +366,18 @@ def main() -> None:
                                 learned_model.head(temporal_output)[0, 0, 0]
                             )
                         )
-                switched = latch.update(
-                    learned_probability >= learned_threshold
-                )
+                if grounded_temporal is not None:
+                    was_switched = reversible_latch.switched
+                    switched = reversible_latch.update(
+                        learned_probability >= learned_threshold,
+                        learned_rollback_probability >= args.rollback_threshold,
+                    )
+                    if was_switched and not switched:
+                        rollback_steps.append(step)
+                else:
+                    switched = latch.update(
+                        learned_probability >= learned_threshold
+                    )
             else:
                 switched = (
                     latch.update(mug_on_plate)
@@ -331,6 +413,7 @@ def main() -> None:
                 "stage_switched": switched,
                 "stage_switch_event": step == switch_step,
                 "learned_stage_probability": learned_probability,
+                "learned_rollback_probability": learned_rollback_probability,
                 "planned_action": action.tolist(),
                 "executed_action": action.tolist(),
                 "robot_state_before": extract_robot_state(before),
@@ -375,6 +458,7 @@ def main() -> None:
             "oracle_switched": switch_step is not None,
             "stage_switch_step": switch_step,
             "stage_switched": switch_step is not None,
+            "rollback_steps": rollback_steps,
             "video": str(args.output.resolve()),
             "steps_jsonl": str(steps_path.resolve()),
         }
