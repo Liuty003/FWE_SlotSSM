@@ -3353,3 +3353,31 @@ OpenVLA续跑失败。
 ```text
 /data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v11-render-fixed/task6-episode2.mp4
 ```
+
+### 20.31 episode2两次恢复完整成功
+
+在线runner新增最终MuJoCo状态导出，候选采集器可从真实在线失败状态直接建立独立分支。
+v12末态审计发现：OpenVLA已把布丁送到目标区域，目标距离约0.00027米，杯子也仍在
+盘子上；瓶颈是连续控制环境中的成功验证停滞，而不是需要再次长距离搬运布丁。
+
+在第一次杯子恢复和OpenVLA布丁阶段之后，runner进行第二次独立控制分支恢复。开发候选
+`reclose_lift`执行2步后最终`env.check_success()`为真，得到完整成功视频：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v13-double-recovery/task6-episode2.mp4
+```
+
+视频为H.264/yuv420p、413帧、20.65秒，已抽帧检查，无EGL闪烁或条纹。结果元数据：
+
+```text
+first selected candidate = place_fine_280_170
+mug_completed_by_recovery = true
+second recovery candidate = reclose_lift
+second recovery steps = 2
+success = true
+```
+
+这是一次episode内连续两次恢复并达到最终成功的工程闭环，但尚不能称为完全学习化统一
+闭环：第一次触发时刻仍为开发固定点，第二次候选也是开发期指定，仿真谓词用于最终验证。
+下一步应把第二停滞状态纳入Mamba2输入与候选训练，统一自动触发、候选评分和状态机，
+然后冻结方案评测未查看episode。

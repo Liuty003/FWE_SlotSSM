@@ -72,6 +72,16 @@ def arguments():
     )
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--save-final-sim-state",
+        type=Path,
+        help="Optional flattened MuJoCo state for a subsequent recovery fork.",
+    )
+    parser.add_argument(
+        "--second-recovery-candidate",
+        choices=tuple(candidate_macros()),
+        help="Optional second recovery after an unsuccessful OpenVLA resume.",
+    )
     return parser.parse_args()
 
 
@@ -152,6 +162,9 @@ def main():
     }
     frames = []
     success = False
+    final_sim_state = None
+    second_recovery_steps = 0
+    second_recovery_success = False
     stage_streak = 0
     stage_switched = args.resume_mode == "pudding"
     stage_switch_step = None
@@ -243,6 +256,44 @@ def main():
             if success:
                 frames.extend([frames[-1]] * 10)
                 break
+        if not success and args.second_recovery_candidate is not None:
+            second_state = env.get_sim_state()
+            env.close()
+            second_env = OffScreenRenderEnv(
+                bddl_file_name=str(bddl),
+                camera_heights=256,
+                camera_widths=256,
+            )
+            second_env.seed(0)
+            second_env.reset()
+            second_env.set_init_state(initial_states[args.episode_id])
+            obs = second_env.regenerate_obs_from_state(second_state)
+            controller = second_env.env.robots[0].controller
+            controller.update(force=True)
+            controller.reset_goal()
+            second_env.env.timestep = 0
+            second_env.env.done = False
+            env = second_env
+            second_chunk = candidate_macros()[args.second_recovery_candidate]
+            for index, candidate_action in enumerate(second_chunk):
+                image = np.ascontiguousarray(
+                    obs["agentview_image"][::-1, ::-1]
+                )
+                frames.append(annotate(
+                    image,
+                    "SECOND RECOVERY: "
+                    f"{args.second_recovery_candidate}  "
+                    f"step={index + 1}/{len(second_chunk)}",
+                    (255, 100, 220),
+                ))
+                obs, _, _, _ = env.step(candidate_action.tolist())
+                second_recovery_steps += 1
+                success = bool(env.check_success())
+                if success:
+                    second_recovery_success = True
+                    frames.extend([frames[-1]] * 10)
+                    break
+        final_sim_state = env.get_sim_state()
     finally:
         env.close()
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -262,6 +313,9 @@ def main():
         "resume_mode": args.resume_mode,
         "stage_switch_step": stage_switch_step,
         "mug_completed_by_recovery": mug_completed_by_recovery,
+        "second_recovery_candidate": args.second_recovery_candidate,
+        "second_recovery_steps": second_recovery_steps,
+        "second_recovery_success": second_recovery_success,
         "mug_position_after_recovery": mug_position_after_recovery,
         "plate_position_after_recovery": plate_position_after_recovery,
         "video": str(args.output),
@@ -269,6 +323,9 @@ def main():
     args.output.with_suffix(".json").write_text(
         json.dumps(metadata, indent=2), encoding="utf-8"
     )
+    if args.save_final_sim_state is not None:
+        args.save_final_sim_state.parent.mkdir(parents=True, exist_ok=True)
+        np.save(args.save_final_sim_state, final_sim_state)
     print(json.dumps(metadata, indent=2))
     raise SystemExit(0 if success else 1)
 

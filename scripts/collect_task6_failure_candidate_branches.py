@@ -36,7 +36,12 @@ PLATE = "plate_1_pos"
 
 def arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source-rollout", type=Path, required=True)
+    parser.add_argument("--source-rollout", type=Path)
+    parser.add_argument(
+        "--source-sim-state",
+        type=Path,
+        help="Flattened MuJoCo .npy state saved by an online recovery run.",
+    )
     parser.add_argument("--episode-id", type=int, default=6)
     parser.add_argument("--failure-timestep", type=int, default=211)
     parser.add_argument(
@@ -166,14 +171,20 @@ def main():
     from libero.libero import benchmark, get_libero_path
     from libero.libero.envs import OffScreenRenderEnv
 
-    rows = [
-        json.loads(line)
-        for line in (args.source_rollout / "steps.jsonl").read_text().splitlines()
-        if line.strip()
-    ]
-    by_timestep = {int(row["timestep"]): row for row in rows}
-    if args.failure_timestep not in by_timestep:
-        raise ValueError("failure timestep is absent from source rollout")
+    if (args.source_rollout is None) == (args.source_sim_state is None):
+        raise ValueError("provide exactly one source rollout or source sim state")
+    by_timestep = {}
+    if args.source_rollout is not None:
+        rows = [
+            json.loads(line)
+            for line in (
+                args.source_rollout / "steps.jsonl"
+            ).read_text().splitlines()
+            if line.strip()
+        ]
+        by_timestep = {int(row["timestep"]): row for row in rows}
+        if args.failure_timestep not in by_timestep:
+            raise ValueError("failure timestep is absent from source rollout")
     suite = benchmark.get_benchmark_dict()[TASK_SUITE]()
     task = suite.get_task(TASK_ID)
     initial_states = suite.get_task_init_states(TASK_ID)
@@ -202,13 +213,20 @@ def main():
     collateral_key = MUG if args.target_role == "pudding" else PUDDING
     noop = action()
     try:
-        obs = None
-        for _ in range(args.wait_steps):
-            obs, _, _, _ = source_env.step(noop.tolist())
-        for timestep in range(args.failure_timestep):
-            row = by_timestep[timestep]
-            obs, _, _, _ = source_env.step(row["executed_action"])
-        sim_state = source_env.get_sim_state()
+        if args.source_sim_state is not None:
+            sim_state = np.load(args.source_sim_state)
+            obs = source_env.regenerate_obs_from_state(sim_state)
+            controller = source_env.env.robots[0].controller
+            controller.update(force=True)
+            controller.reset_goal()
+        else:
+            obs = None
+            for _ in range(args.wait_steps):
+                obs, _, _, _ = source_env.step(noop.tolist())
+            for timestep in range(args.failure_timestep):
+                row = by_timestep[timestep]
+                obs, _, _, _ = source_env.step(row["executed_action"])
+            sim_state = source_env.get_sim_state()
         before = object_positions(obs)
         before_eef = np.asarray(obs["robot0_eef_pos"], np.float32)
         before_distance = (
@@ -338,7 +356,14 @@ def main():
                 "episode_id": args.episode_id,
                 "failure_timestep": args.failure_timestep,
                 "target_role": args.target_role,
-                "source_rollout": str(args.source_rollout),
+                "source_rollout": (
+                    str(args.source_rollout)
+                    if args.source_rollout is not None else None
+                ),
+                "source_sim_state": (
+                    str(args.source_sim_state)
+                    if args.source_sim_state is not None else None
+                ),
                 "model_input_excludes_privileged_outcomes": True,
                 "same_sim_state_for_all_candidates": True,
                 "independent_controller_per_candidate": True,
