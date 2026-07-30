@@ -154,22 +154,28 @@ def main():
     ]
     if not train or not validation:
         raise ValueError("both training and validation groups are required")
-    contexts = torch.stack([group["context"] for group in train]).to(device)
-    chunks = torch.stack([group["chunks"] for group in train]).to(device)
-    values = torch.stack([group["values"] for group in train]).to(device)
-    # Ranking is within matched state, so remove arbitrary group offsets.
-    normalized = values - values.mean(1, keepdim=True)
-    model = MacroCandidateScorer(chunk_steps=chunks.shape[2]).to(device)
+    model = MacroCandidateScorer(
+        chunk_steps=train[0]["chunks"].shape[1]
+    ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=1e-4
     )
     best = None
     for epoch in range(1, args.epochs + 1):
         model.train()
-        prediction = model(contexts, chunks)
-        loss = F.smooth_l1_loss(prediction, normalized) + pairwise_ranking_loss(
-            prediction, normalized
-        )
+        losses = []
+        for group in train:
+            context = group["context"][None].to(device)
+            chunks = group["chunks"][None].to(device)
+            values = group["values"][None].to(device)
+            # Ranking is within a matched state, so remove group offsets.
+            normalized = values - values.mean(1, keepdim=True)
+            prediction = model(context, chunks)
+            losses.append(
+                F.smooth_l1_loss(prediction, normalized)
+                + pairwise_ranking_loss(prediction, normalized)
+            )
+        loss = torch.stack(losses).mean()
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()

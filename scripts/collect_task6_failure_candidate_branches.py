@@ -60,6 +60,17 @@ def recovery_macro(dx=0., dy=0.):
     )
 
 
+def wide_recovery_macro(dx=0., dy=0.):
+    """Search farther while retaining close and lift verification in 28 steps."""
+    return np.stack(
+        [action(z=.35)] * 4
+        + [action(x=dx, y=dy)] * 8
+        + [action(z=-.35)] * 4
+        + [action(gripper=1.)] * 6
+        + [action(z=.4, gripper=1.)] * 6
+    )
+
+
 def candidate_macros():
     candidates = {
         "reclose_lift": np.stack(
@@ -73,6 +84,10 @@ def candidate_macros():
         "regrasp_y_plus": recovery_macro(dy=.30),
         "regrasp_diag_minus_plus": recovery_macro(dx=-.22, dy=.22),
         "regrasp_diag_plus_minus": recovery_macro(dx=.22, dy=-.22),
+        "wide_x_minus": wide_recovery_macro(dx=-.80),
+        "wide_y_minus": wide_recovery_macro(dy=-.80),
+        "wide_diag_minus_minus": wide_recovery_macro(dx=-.75, dy=-.30),
+        "wide_diag_minus_plus": wide_recovery_macro(dx=-.75, dy=.30),
     }
     values = [chunk.tobytes() for chunk in candidates.values()]
     if len(set(values)) != len(values):

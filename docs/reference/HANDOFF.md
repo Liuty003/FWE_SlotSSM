@@ -3227,3 +3227,42 @@ episode7上的有效推进、停滞、受控搬运balanced accuracy分别为
 这是首条“时序失败状态→多个候选→学习排序→执行候选→OpenVLA续跑成功”的完整证据。
 当前只有5个matched states且候选为人工参数化宏动作，下一步应从每条失败窗采集多个
 时间点与不同幅度，增加拒绝/扩大搜索头，再做episode级成功率对照。
+
+### 20.28 将最终失败episode3恢复为成功
+
+task6开发集的原Oracle阶段切换结果是7/10成功，最终失败为episode2/3/9。episode6
+本身属于成功轨迹，因此20.27只能证明中途干预闭环，不是失败转成功。
+
+episode3在step309时EEF与布丁相距0.104米，原8个局部候选全部无效。候选集新增4个
+28步大范围搜索宏动作，并将排序训练改为支持每个matched state拥有不同候选数量。
+扩大后的同状态分支中：
+
+- `wide_diag_minus_minus`建立夹持并抬高布丁0.0258米；
+- `wide_x_minus`只推动0.0087米；
+- `wide_y_minus`扰动杯子0.0355米，受到安全价值惩罚；
+- 其余局部候选仍未建立夹持。
+
+更新后的排序器继续保持episode5/22选择`reclose_lift`、episode24选择
+`regrasp_center`、留出episode6选择`reclose_lift`，并在episode3选择
+`wide_diag_minus_minus`。
+
+在线完整闭环：
+
+```text
+原最终失败episode3重放至step309
+→ 12候选排序选择wide_diag_minus_minus
+→ 28步大范围重定位与重抓
+→ 冻结OpenVLA接管10步
+→ LIBERO success
+```
+
+完整17.85秒、357帧视频：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v2/task6-episode3.mp4
+```
+
+这首次把一条标准设置下的最终失败轨迹变为成功。若将该开发结果计入，当前已演示可把
+同一批10条的7/10提高到至少8/10；但episode3候选参与了开发训练，不能作为独立泛化
+数字。下一步针对episode2和9的第一阶段杯子失败建立相同的杯子候选恢复，再冻结开发
+方案并运行未查看episode10–19。
