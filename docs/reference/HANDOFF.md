@@ -3381,3 +3381,23 @@ success = true
 闭环：第一次触发时刻仍为开发固定点，第二次候选也是开发期指定，仿真谓词用于最终验证。
 下一步应把第二停滞状态纳入Mamba2输入与候选训练，统一自动触发、候选评分和状态机，
 然后冻结方案评测未查看episode。
+
+### 20.32 自然空夹的Mamba2自动触发恢复
+
+针对“模型意识到没有夹上再重新夹”的证据，选择task6 episode6的自然空夹，而非人工
+注入失败。该episode未参与Execution Mamba2训练集，属于训练时的验证episode。真实
+`failed_acquisition`标签从第211步开始；因果Mamba2采用阈值0.08、连续3帧确认，在
+第213步自动触发，延迟2帧，触发分数0.162。相邻episode7为边缘夹持但最终成功，使用
+相同assessment gate和确认规则不触发。
+
+触发后，短候选评分器在12个动作中选择`reclose_lift`，执行28步重新闭爪和抬升验证，
+随后冻结OpenVLA续跑37步达到最终LIBERO success。正常标注视频：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v15-auto-empty-grasp-labeled/task6-episode6.mp4
+```
+
+视频顶部同时显示`failed_acq`分数和`gate=WAIT/ASSESS`：只有进入抓取结果评估窗口且
+分数连续3帧越阈值才触发，避免“机械臂只要靠近物体就重抓”。该演示仍使用预计算的
+因果role-slot序列，而不是现场逐帧视觉编码；下一步需把相同逻辑接到在线Slot提取器，
+并批量验证episode7等成功边缘抓取不被破坏。

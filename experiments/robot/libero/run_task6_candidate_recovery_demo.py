@@ -31,6 +31,12 @@ from scripts.collect_task6_failure_candidate_branches import (  # noqa: E402
     cup_place_macros,
 )
 from scripts.train_task6_execution_mamba import ExecutionMamba  # noqa: E402
+from scripts.train_task6_execution_mamba import (  # noqa: E402
+    FAILED_ACQUISITION_THRESHOLD,
+    MOTION_GATE_CENTER,
+    MOTION_GATE_SCALE,
+)
+from scripts.train_task6_execution_slots import HEADS  # noqa: E402
 from scripts.train_task6_macro_candidate_scorer import (  # noqa: E402
     MacroCandidateScorer,
 )
@@ -57,6 +63,11 @@ def arguments():
     )
     parser.add_argument("--episode-id", type=int, default=6)
     parser.add_argument("--failure-timestep", type=int, default=211)
+    parser.add_argument(
+        "--auto-trigger", action="store_true",
+        help="Derive failure timestep causally from Execution Mamba2.",
+    )
+    parser.add_argument("--trigger-confirm-frames", type=int, default=3)
     parser.add_argument("--wait-steps", type=int, default=20)
     parser.add_argument("--max-resume-steps", type=int, default=220)
     parser.add_argument(
@@ -83,6 +94,50 @@ def arguments():
         help="Optional second recovery after an unsuccessful OpenVLA resume.",
     )
     return parser.parse_args()
+
+
+@torch.inference_mode()
+def causal_failure_scores(args, device):
+    sequence = load_file(
+        args.sequence_dir
+        / f"task6-episode{args.episode_id}-execution-roles.safetensors"
+    )
+    if "acquisition_assessment_active" not in sequence:
+        raise ValueError(
+            "auto trigger requires acquisition_assessment_active in sequence"
+        )
+    execution = ExecutionMamba().to(device).eval()
+    execution.load_state_dict(load_file(args.execution_checkpoint))
+    logits, _ = execution(
+        sequence["role_slots"][None].to(device),
+        sequence["role_geometry"][None].to(device),
+        sequence["actions"][None].to(device),
+    )
+    column = HEADS.index("failed_acquisition")
+    scores = logits[0, :, column].sigmoid().cpu()
+    geometry = sequence["role_geometry"][:, 2, :2]
+    motion = torch.zeros(len(geometry))
+    motion[15:] = (geometry[15:] - geometry[:-15]).norm(dim=-1)
+    scores = torch.minimum(
+        scores,
+        torch.sigmoid(
+            (MOTION_GATE_CENTER - motion) * MOTION_GATE_SCALE
+        ),
+    )
+    active = sequence["acquisition_assessment_active"].bool()
+    confirm = args.trigger_confirm_frames
+    trigger = next((
+        timestep
+        for timestep in range(confirm - 1, len(scores))
+        if active[timestep - confirm + 1:timestep + 1].all()
+        and (
+            scores[timestep - confirm + 1:timestep + 1]
+            >= FAILED_ACQUISITION_THRESHOLD
+        ).all()
+    ), None)
+    if trigger is None:
+        raise RuntimeError("Execution Mamba2 did not confirm failed acquisition")
+    return trigger, scores.numpy(), active.numpy()
 
 
 def annotate(image, text, color):
@@ -132,6 +187,14 @@ def main():
     from libero.libero.envs import OffScreenRenderEnv
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    detector_scores = None
+    detector_active = None
+    if args.auto_trigger:
+        (
+            args.failure_timestep,
+            detector_scores,
+            detector_active,
+        ) = causal_failure_scores(args, device)
     selected_name, selected_chunk, predicted_values = select_candidate(
         args, device
     )
@@ -176,7 +239,15 @@ def main():
                 obs["agentview_image"][::-1, ::-1]
             )
             frames.append(annotate(
-                image, f"REPLAY ORIGINAL  step={timestep}", (170, 170, 170)
+                image,
+                (
+                    f"NORMAL  step={timestep}  "
+                    f"failed_acq={detector_scores[timestep]:.3f}  "
+                    f"gate={'ASSESS' if detector_active[timestep] else 'WAIT'}"
+                    if detector_scores is not None
+                    else f"REPLAY ORIGINAL  step={timestep}"
+                ),
+                (170, 170, 170),
             ))
             obs, _, _, _ = env.step(rows[timestep]["executed_action"])
         # Candidate teachers are evaluated in a fresh fork environment.  The
@@ -206,7 +277,11 @@ def main():
             )
             frames.append(annotate(
                 image,
-                f"RECOVERY: {selected_name}  step={index + 1}/{len(selected_chunk)}",
+                (
+                    "FAILED ACQUISITION DETECTED  "
+                    if index == 0 and args.auto_trigger else "REGRASP  "
+                )
+                + f"{selected_name}  step={index + 1}/{len(selected_chunk)}",
                 (255, 180, 30),
             ))
             obs, _, _, _ = env.step(candidate_action.tolist())
@@ -302,6 +377,16 @@ def main():
         "schema_version": 1,
         "episode_id": args.episode_id,
         "failure_timestep": args.failure_timestep,
+        "trigger_source": (
+            "execution_mamba2_causal" if args.auto_trigger else "fixed"
+        ),
+        "trigger_confirm_frames": (
+            args.trigger_confirm_frames if args.auto_trigger else None
+        ),
+        "trigger_score": (
+            float(detector_scores[args.failure_timestep])
+            if detector_scores is not None else None
+        ),
         "selected_candidate": selected_name,
         "candidate_macro_kind": args.candidate_macro_kind,
         "predicted_values": predicted_values,
