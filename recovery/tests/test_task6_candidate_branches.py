@@ -53,7 +53,7 @@ def test_relative_regrasps_follow_observed_target_geometry():
     relative = np.asarray([-.04, .006, -.03], np.float32)
     candidates = relative_regrasp_macros(relative)
     assert {chunk.shape for chunk in candidates.values()} == {(50, 7)}
-    assert len(candidates) == 12
+    assert len(candidates) == 24
     for chunk in candidates.values():
         assert chunk[6:16, 0].mean() < 0
         assert chunk[6:16, 1].mean() > 0

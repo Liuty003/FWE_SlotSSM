@@ -14,6 +14,7 @@ import numpy as np
 import torch
 from PIL import Image, ImageDraw
 from safetensors.torch import load_file
+from torchvision import transforms
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 LIBERO_ROOT = REPO_ROOT / "experiments" / "robot" / "libero"
@@ -39,11 +40,15 @@ from scripts.train_task6_execution_mamba import (  # noqa: E402
     MOTION_GATE_SCALE,
 )
 from scripts.train_task6_execution_slots import HEADS  # noqa: E402
+from scripts.train_task6_execution_slots import Task6ExecutionSlots  # noqa: E402
 from scripts.train_task6_macro_candidate_scorer import (  # noqa: E402
     MacroCandidateScorer,
 )
 from scripts.train_task6_slot_relative_geometry import (  # noqa: E402
     SlotRelativeGeometry,
+)
+from recovery.teachers.sim_contact import (  # noqa: E402
+    extract_target_gripper_contact,
 )
 
 TASK_SUITE = "libero_10"
@@ -74,6 +79,10 @@ def arguments():
             "candidate scorer and is recorded in output metadata."
         ),
     )
+    parser.add_argument(
+        "--candidate-name", action="append",
+        help="Restrict learned scoring to named candidates (repeatable).",
+    )
     parser.add_argument("--episode-id", type=int, default=6)
     parser.add_argument("--failure-timestep", type=int, default=211)
     parser.add_argument(
@@ -85,7 +94,23 @@ def arguments():
         action="store_true",
         help="Trigger from causal drift of observable slot-relative xyz.",
     )
+    parser.add_argument(
+        "--auto-acquisition-verify-trigger",
+        action="store_true",
+        help=(
+            "Use post-close observable slot lift and relative drift to "
+            "distinguish empty acquisition from edge-slip."
+        ),
+    )
     parser.add_argument("--geometry-checkpoint", type=Path)
+    parser.add_argument("--slot-checkpoint", type=Path)
+    parser.add_argument(
+        "--reobserve-after-retract", type=int, default=0,
+        help=(
+            "Execute this many candidate prefix steps, re-estimate live slot "
+            "geometry, then regenerate the selected relative-regrasp chunk."
+        ),
+    )
     parser.add_argument("--geometry-drift-threshold", type=float, default=.04)
     parser.add_argument("--geometry-lookback", type=int, default=15)
     parser.add_argument("--trigger-confirm-frames", type=int, default=3)
@@ -177,11 +202,9 @@ def causal_failure_scores(args, device):
 
 
 @torch.inference_mode()
-def causal_geometry_trigger(args, device):
+def observable_relative_geometry(args, device):
     if args.geometry_checkpoint is None:
-        raise ValueError(
-            "--geometry-checkpoint is required with --auto-geometry-trigger"
-        )
+        raise ValueError("--geometry-checkpoint is required")
     sequence = load_file(
         args.sequence_dir
         / f"task6-episode{args.episode_id}-execution-roles.safetensors"
@@ -193,6 +216,12 @@ def causal_geometry_trigger(args, device):
         sequence["role_geometry"].to(device),
         sequence["robot_features"].to(device),
     ).cpu()
+    return relative, sequence
+
+
+@torch.inference_mode()
+def causal_geometry_trigger(args, device):
+    relative, sequence = observable_relative_geometry(args, device)
     lookback = args.geometry_lookback
     drift = torch.zeros(len(relative))
     drift[lookback:] = torch.linalg.vector_norm(
@@ -216,12 +245,91 @@ def causal_geometry_trigger(args, device):
     return trigger, relative.numpy(), drift.numpy(), active.numpy()
 
 
+@torch.inference_mode()
+def causal_acquisition_verify_trigger(args, device):
+    relative, sequence = observable_relative_geometry(args, device)
+    actions = sequence["actions"]
+    aperture = sequence["robot_features"][:, 3]
+    eef_z = sequence["robot_features"][:, 2]
+    active = sequence["stage2_active"].bool()
+    attempts = [
+        timestep for timestep in range(len(actions))
+        if active[timestep]
+        and float(actions[timestep, 6]) > .5
+        and float(aperture[timestep]) > .03
+        and (timestep == 0 or float(actions[timestep - 1, 6]) <= .5)
+    ]
+    for attempt in attempts:
+        assess = attempt + 15
+        if assess >= len(relative):
+            continue
+        lift = float(
+            relative[assess, 2] + eef_z[assess]
+            - relative[attempt, 2] - eef_z[attempt]
+        )
+        drift = float(torch.linalg.vector_norm(
+            relative[assess] - relative[attempt]
+        ))
+        if lift < .01 and drift < .025:
+            trigger, kind = assess, "empty_acquisition"
+            break
+        if lift < .01 and drift >= .025:
+            trigger, kind = min(attempt + 30, len(relative) - 1), "edge_slip"
+            break
+    else:
+        raise RuntimeError("no failed acquisition was causally confirmed")
+    score = torch.zeros(len(relative))
+    score[attempt:trigger + 1] = torch.linalg.vector_norm(
+        relative[attempt:trigger + 1] - relative[attempt], dim=-1
+    )
+    assessment = torch.zeros(len(relative), dtype=torch.bool)
+    assessment[attempt:trigger + 1] = True
+    return (
+        trigger, relative.numpy(), score.numpy(), assessment.numpy(),
+        kind, attempt, lift, drift,
+    )
+
+
 def annotate(image, text, color):
     canvas = Image.fromarray(image)
     draw = ImageDraw.Draw(canvas)
     draw.rectangle((0, 0, canvas.width, 19), fill=(0, 0, 0))
     draw.text((5, 4), text, fill=color)
     return np.asarray(canvas)
+
+
+@torch.inference_mode()
+def live_relative_geometry(
+    obs, last_action, slot_model, geometry_model, device
+):
+    image = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+    transform = transforms.Compose([
+        transforms.Resize((128, 128)),
+        transforms.ToTensor(),
+        transforms.Normalize((.485, .456, .406), (.229, .224, .225)),
+    ])
+    tensor = transform(Image.fromarray(image))[None].to(device)
+    action_tensor = torch.as_tensor(
+        last_action, dtype=torch.float32, device=device
+    )[None]
+    mask_logits, role_slots, _, _ = slot_model(tensor, action_tensor)
+    masks = mask_logits.sigmoid()
+    height, width = masks.shape[-2:]
+    y = torch.linspace(-1, 1, height, device=device)[None, None, :, None]
+    x = torch.linspace(-1, 1, width, device=device)[None, None, None, :]
+    mass = masks.sum((2, 3)).clamp_min(1)
+    role_geometry = torch.stack((
+        (masks * x).sum((2, 3)) / mass,
+        (masks * y).sum((2, 3)) / mass,
+        mass / (height * width),
+    ), dim=-1)
+    robot_features = torch.as_tensor([[
+        *np.asarray(obs["robot0_eef_pos"], np.float32).tolist(),
+        float(np.abs(obs["robot0_gripper_qpos"]).mean()),
+    ]], dtype=torch.float32, device=device)
+    return geometry_model(
+        role_slots, role_geometry, robot_features
+    )[0].cpu().numpy()
 
 
 @torch.inference_mode()
@@ -259,6 +367,11 @@ def select_candidate(args, device, relative_prediction=None):
             "safe-approach": safe_approach_macros,
         }
         macros = macro_sets[args.candidate_macro_kind]()
+    if args.candidate_name:
+        missing = set(args.candidate_name) - set(macros)
+        if missing:
+            raise ValueError(f"unknown candidates: {sorted(missing)}")
+        macros = {name: macros[name] for name in args.candidate_name}
     if args.forced_candidate is not None:
         if args.forced_candidate not in macros:
             raise ValueError(
@@ -314,7 +427,15 @@ def main():
     detector_active = None
     geometry_relative = None
     geometry_drift = None
-    if args.auto_trigger and args.auto_geometry_trigger:
+    acquisition_kind = None
+    acquisition_attempt = None
+    acquisition_lift = None
+    acquisition_drift = None
+    if sum((
+        args.auto_trigger,
+        args.auto_geometry_trigger,
+        args.auto_acquisition_verify_trigger,
+    )) > 1:
         raise ValueError("choose only one automatic trigger")
     if args.auto_trigger:
         (
@@ -329,13 +450,46 @@ def main():
             geometry_drift,
             detector_active,
         ) = causal_geometry_trigger(args, device)
+    elif args.auto_acquisition_verify_trigger:
+        (
+            args.failure_timestep,
+            geometry_relative,
+            geometry_drift,
+            detector_active,
+            acquisition_kind,
+            acquisition_attempt,
+            acquisition_lift,
+            acquisition_drift,
+        ) = causal_acquisition_verify_trigger(args, device)
+    elif (
+        args.geometry_checkpoint is not None
+        and args.candidate_macro_kind == "relative-regrasp"
+    ):
+        geometry_relative, _ = observable_relative_geometry(args, device)
+        geometry_relative = geometry_relative.numpy()
     selected_name, selected_chunk, predicted_values = select_candidate(
         args, device, geometry_relative
     )
+    live_slot_model = None
+    live_geometry_model = None
+    reobserved_relative = None
+    if args.reobserve_after_retract:
+        if args.slot_checkpoint is None or args.geometry_checkpoint is None:
+            raise ValueError(
+                "live reobservation requires --slot-checkpoint and "
+                "--geometry-checkpoint"
+            )
+        live_slot_model = Task6ExecutionSlots().to(device).eval()
+        live_slot_model.load_state_dict(load_file(args.slot_checkpoint))
+        live_geometry_model = SlotRelativeGeometry().to(device).eval()
+        live_geometry_model.load_state_dict(load_file(args.geometry_checkpoint))
     torch.cuda.empty_cache()
-    model, processor, input_device = load_openvla(
-        args.checkpoint, args.device_map, args.gpu_memory_gib
-    )
+    if args.max_resume_steps:
+        model, processor, input_device = load_openvla(
+            args.checkpoint, args.device_map, args.gpu_memory_gib
+        )
+    else:
+        model = processor = input_device = None
     suite = benchmark.get_benchmark_dict()[TASK_SUITE]()
     task = suite.get_task(TASK_ID)
     initial_states = suite.get_task_init_states(TASK_ID)
@@ -412,7 +566,37 @@ def main():
             fork_env.env.timestep = 0
             fork_env.env.done = False
             env = fork_env
-        for index, candidate_action in enumerate(selected_chunk):
+        candidate_start = 0
+        if args.reobserve_after_retract:
+            prefix_steps = min(
+                args.reobserve_after_retract, len(selected_chunk)
+            )
+            for index, candidate_action in enumerate(
+                selected_chunk[:prefix_steps]
+            ):
+                image = np.ascontiguousarray(
+                    obs["agentview_image"][::-1, ::-1]
+                )
+                frames.append(annotate(
+                    image,
+                    f"RETRACT BEFORE REOBSERVE  "
+                    f"step={index + 1}/{prefix_steps}",
+                    (255, 180, 30),
+                ))
+                obs, _, _, _ = env.step(candidate_action.tolist())
+            reobserved_relative = live_relative_geometry(
+                obs, selected_chunk[prefix_steps - 1],
+                live_slot_model, live_geometry_model, device,
+            )
+            regenerated = relative_regrasp_macros(reobserved_relative)
+            selected_chunk = np.concatenate((
+                selected_chunk[:prefix_steps],
+                regenerated[selected_name],
+            ))
+            candidate_start = prefix_steps
+        for index, candidate_action in enumerate(
+            selected_chunk[candidate_start:], start=candidate_start
+        ):
             image = np.ascontiguousarray(
                 obs["agentview_image"][::-1, ::-1]
             )
@@ -431,6 +615,12 @@ def main():
         ))
         mug_position_after_recovery = np.asarray(
             obs["porcelain_mug_1_pos"], dtype=np.float32
+        ).tolist()
+        _, pudding_attached_after_recovery = extract_target_gripper_contact(
+            env.env.sim, target_name="chocolate_pudding_1"
+        )
+        pudding_position_after_recovery = np.asarray(
+            obs["chocolate_pudding_1_pos"], dtype=np.float32
         ).tolist()
         plate_position_after_recovery = np.asarray(
             obs["plate_1_pos"], dtype=np.float32
@@ -521,7 +711,9 @@ def main():
         "trigger_source": (
             "execution_mamba2_causal" if args.auto_trigger
             else "observable_slot_geometry_causal"
-            if args.auto_geometry_trigger else "fixed"
+            if args.auto_geometry_trigger
+            else "observable_slot_acquisition_verification"
+            if args.auto_acquisition_verify_trigger else "fixed"
         ),
         "trigger_confirm_frames": (
             args.trigger_confirm_frames
@@ -547,6 +739,16 @@ def main():
             float(geometry_drift[args.failure_timestep])
             if geometry_drift is not None else None
         ),
+        "acquisition_failure_kind": acquisition_kind,
+        "acquisition_attempt_timestep": acquisition_attempt,
+        "acquisition_lift_at_assessment_m": acquisition_lift,
+        "acquisition_relative_drift_at_assessment_m":
+            acquisition_drift,
+        "reobserve_after_retract": args.reobserve_after_retract,
+        "reobserved_relative_xyz_m": (
+            reobserved_relative.tolist()
+            if reobserved_relative is not None else None
+        ),
         "candidate_macro_kind": args.candidate_macro_kind,
         "continuous_recovery": args.continuous_recovery,
         "predicted_values": predicted_values,
@@ -562,6 +764,10 @@ def main():
         "second_recovery_steps": second_recovery_steps,
         "second_recovery_success": second_recovery_success,
         "mug_position_after_recovery": mug_position_after_recovery,
+        "pudding_attached_after_recovery":
+            bool(pudding_attached_after_recovery),
+        "pudding_position_after_recovery":
+            pudding_position_after_recovery,
         "plate_position_after_recovery": plate_position_after_recovery,
         "video": str(args.output),
     }

@@ -3518,3 +3518,38 @@ success = true
 当前主要限制：候选评分训练/验证均为episode3开发状态，尚非跨episode泛化证据；视觉
 漂移规则在episode4会潜在误触发，下一步必须先做全部nominal episode只读shadow审计，
 再决定加入任务进度/接触稳定性门控或重训，不应直接宣布安全普适。
+
+### 20.35 自然基线ep1空夹与ep6边缘滑脱
+
+用户指出的ep1/ep6来自`libero10-natural-baseline-v1`，不是后续oracle子目标轨迹。
+两条自然基线均跑满520步失败。已将其1040帧转为三角色slot序列；因果标签得到：
+
+```text
+ep1: failed_acquisition 24 frames
+ep6: failed_acquisition 15 frames, slip_risk 35 frames
+```
+
+新增闭爪后可观测验证触发：
+
+- 闭爪15帧后目标抬升小于0.01米、相对漂移小于0.025米：`empty_acquisition`；
+- 抬升不足但相对漂移较大：标记边缘不稳定，观察至闭爪后30帧确认`edge_slip`。
+
+ep1在168步尝试、183步自动确认空夹。视觉几何生成候选，学习评分器选择
+`relative_x080_y040_z085`，恢复后物理接触为真，OpenVLA续跑16步最终成功：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-natural-ep1-empty-grasp-recovery-v2-auto-scored/task6-episode1.mp4
+```
+
+ep6在200步尝试边缘夹持，布丁逐步转斜并留在桌面；230步自动确认滑脱。因视觉x距离
+高估，候选库增加轴向低尺度不确定性。8个稳定状态分支中3个可重抓，浅下降均失败、
+深下降均成功。评分器选择`relative_x040_y080_z114`，重抓接触为真，OpenVLA续跑
+27步最终成功：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-natural-ep6-edge-slip-recovery-v6-auto-scored/task6-episode6.mp4
+```
+
+两条均使用可观测slot几何自动触发、视觉相对候选和学习式评分，不使用固定触发或强制
+候选。ep6在仍有脆弱接触的220步进行状态fork会导致MuJoCo数值爆炸，因此最终方法等待
+至230步确认脱离；旋转腕部的激进开发尝试也被弃用，不属于最终结果。

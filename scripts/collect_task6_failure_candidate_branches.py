@@ -66,13 +66,17 @@ def arguments():
         default="short",
     )
     parser.add_argument("--wait-steps", type=int, default=20)
+    parser.add_argument(
+        "--candidate-name", action="append",
+        help="Optionally evaluate only named candidates (repeatable).",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--fps", type=int, default=20)
     return parser.parse_args()
 
 
-def action(x=0., y=0., z=0., gripper=-1.):
-    return np.asarray([x, y, z, 0., 0., 0., gripper], np.float32)
+def action(x=0., y=0., z=0., rx=0., ry=0., rz=0., gripper=-1.):
+    return np.asarray([x, y, z, rx, ry, rz, gripper], np.float32)
 
 
 def recovery_macro(dx=0., dy=0.):
@@ -189,29 +193,38 @@ def relative_regrasp_macros(relative_target_xyz):
     # A monocular slot decoder can have axis-specific bias. Add a compact
     # uncertainty set that varies lateral correction independently while
     # retaining the shallower descent that is robust to depth overestimation.
-    for x_scale in (.8, 1.):
-        for y_scale in (.4, .6, .8):
-            horizontal = np.clip(
-                relative[:2] * np.asarray([x_scale, y_scale], np.float32)
-                / (gain_m_per_unit_step * move_steps),
-                -.9, .9,
-            )
-            descend = np.clip(
-                (relative[2] - raised_m) * .85
-                / (gain_m_per_unit_step * down_steps),
-                -.7, -.12,
-            )
-            name = (
-                f"relative_x{int(x_scale * 100):03d}"
-                f"_y{int(y_scale * 100):03d}_z085"
-            )
-            candidates[name] = np.stack(
-                [action(z=up_action)] * up_steps
-                + [action(x=horizontal[0], y=horizontal[1])] * move_steps
-                + [action(z=descend)] * down_steps
-                + [action(gripper=1.)] * 12
-                + [action(z=.25, gripper=1.)] * 10
-            )
+    for x_scale, y_scales in (
+        (.2, (.6, .8)),
+        (.4, (.6, .8)),
+        (.5, (.3, .4)),
+        (.6, (.3, .4)),
+        (.8, (.4, .6, .8)),
+        (1., (.4, .6, .8)),
+    ):
+        for y_scale in y_scales:
+            for z_scale in ((.85, 1.15) if x_scale <= .4 else (.85,)):
+                horizontal = np.clip(
+                    relative[:2] * np.asarray([x_scale, y_scale], np.float32)
+                    / (gain_m_per_unit_step * move_steps),
+                    -.9, .9,
+                )
+                descend = np.clip(
+                    (relative[2] - raised_m) * z_scale
+                    / (gain_m_per_unit_step * down_steps),
+                    -.7, -.12,
+                )
+                name = (
+                    f"relative_x{int(x_scale * 100):03d}"
+                    f"_y{int(y_scale * 100):03d}"
+                    f"_z{int(z_scale * 100):03d}"
+                )
+                candidates[name] = np.stack(
+                    [action(z=up_action)] * up_steps
+                    + [action(x=horizontal[0], y=horizontal[1])] * move_steps
+                    + [action(z=descend)] * down_steps
+                    + [action(gripper=1.)] * 12
+                    + [action(z=.25, gripper=1.)] * 10
+                )
     return candidates
 
 
@@ -363,6 +376,13 @@ def main():
             if args.macro_kind == "relative-regrasp"
             else macro_factory()
         )
+        if args.candidate_name:
+            missing = set(args.candidate_name) - set(macros)
+            if missing:
+                raise ValueError(f"unknown candidates: {sorted(missing)}")
+            macros = {
+                name: macros[name] for name in args.candidate_name
+            }
         if args.macro_kind.startswith("cup-") and args.target_role != "mug":
             raise ValueError("cup macros require --target-role mug")
         for name, chunk in macros.items():

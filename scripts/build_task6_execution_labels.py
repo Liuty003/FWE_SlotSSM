@@ -44,7 +44,19 @@ def find_steps(roots, episode):
 def stable_stage2(rows, confirm=5):
     result, streak, active = [], 0, False
     for row in rows:
-        value = bool(row.get("mug_on_plate_oracle", False))
+        if "mug_on_plate_oracle" in row:
+            value = bool(row["mug_on_plate_oracle"])
+        else:
+            # Natural OpenVLA baselines predate the online oracle annotation.
+            # Recover the same stage teacher from logged object geometry; this
+            # remains label-only and is never a runtime model input.
+            state = row["privileged_object_state_before"]
+            mug = np.asarray(state[MUG], np.float32)
+            plate = np.asarray(state["plate_1_pos"], np.float32)
+            value = (
+                float(np.linalg.norm(mug[:2] - plate[:2])) < 0.04
+                and float(mug[2] - plate[2]) > -0.005
+            )
         streak = streak + 1 if value else 0
         active = active or streak >= confirm
         result.append(active)
