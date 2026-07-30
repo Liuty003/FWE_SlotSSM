@@ -18,10 +18,13 @@ from pathlib import Path
 
 import imageio.v2 as imageio
 import numpy as np
+import torch
 from PIL import Image, ImageDraw
+from safetensors.torch import load_file
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 LIBERO_ROOT = REPO_ROOT / "experiments" / "robot" / "libero"
+sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(LIBERO_ROOT))
 os.environ.setdefault(
     "LIBERO_CONFIG_PATH", str(LIBERO_ROOT / "baseline_libero_config")
@@ -76,6 +79,8 @@ def arguments() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument("--learned-stage-checkpoint", type=Path)
+    parser.add_argument("--slot-checkpoint", type=Path)
     parser.add_argument(
         "--center-crop", action=argparse.BooleanOptionalAction, default=True
     )
@@ -104,7 +109,7 @@ def annotate(
     draw.text((5, 3), f"{phase}  step={step}", fill=color)
     draw.text(
         (5, 17),
-        f"mug_on_plate={int(predicate)} oracle_switched={int(switched)}",
+        f"mug_on_plate={int(predicate)} stage_switched={int(switched)}",
         fill=(235, 235, 235),
     )
     return np.asarray(canvas)
@@ -112,6 +117,10 @@ def annotate(
 
 def main() -> None:
     args = arguments()
+    if args.learned_stage_checkpoint and not args.slot_checkpoint:
+        raise ValueError("--slot-checkpoint is required for learned stage switching")
+    if args.learned_stage_checkpoint and args.oracle_stage_switch:
+        raise ValueError("use --no-oracle-stage-switch with learned switching")
     from libero.libero import benchmark, get_libero_path
     from libero.libero.envs import OffScreenRenderEnv
 
@@ -139,7 +148,11 @@ def main() -> None:
     metadata = {
         "schema_version": 1,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
-        "demo_kind": "task6_oracle_stage_switch_ceiling",
+        "demo_kind": (
+            "task6_learned_slot_temporal_stage_switch"
+            if args.learned_stage_checkpoint
+            else "task6_oracle_stage_switch_ceiling"
+        ),
         "checkpoint": args.checkpoint,
         "task_suite": TASK_SUITE,
         "task_id": TASK_ID,
@@ -148,10 +161,16 @@ def main() -> None:
         "subgoal_instruction": args.subgoal_instruction,
         "oracle_stage_switch": args.oracle_stage_switch,
         "subgoal_confirm_steps": args.subgoal_confirm_steps,
-        "oracle_policy_input": (
-            "simulator On(porcelain_mug_1, plate_1) predicate only"
+        "stage_switch_policy_input": (
+            "continuous RGB-derived slots and causal temporal hidden state"
+            if args.learned_stage_checkpoint
+            else "simulator On(porcelain_mug_1, plate_1) predicate only"
         ),
         "oracle_action_access": False,
+        "learned_stage_checkpoint": (
+            str(args.learned_stage_checkpoint)
+            if args.learned_stage_checkpoint else None
+        ),
         "completed": False,
         "success": False,
     }
@@ -160,6 +179,36 @@ def main() -> None:
     model, processor, input_device = load_openvla(
         args.checkpoint, args.device_map, args.gpu_memory_gib
     )
+    learned_model = slot_tokenizer = vision_backbone = vision_device = None
+    learned_hidden = learned_past_slots = None
+    learned_threshold = None
+    if args.learned_stage_checkpoint:
+        from prismatic.extern.hf.modeling_prismatic import (
+            OpenVLAForActionPrediction_SlotAtt,
+        )
+        from scripts.train_task6_slot_temporal_state import SlotTemporalClassifier
+
+        slot_wrapper = OpenVLAForActionPrediction_SlotAtt(
+            model=model, number_of_slots=16
+        )
+        slot_wrapper.load_state_dict(load_file(args.slot_checkpoint), strict=False)
+        vision_backbone = slot_wrapper.model.vision_backbone
+        vision_device = next(vision_backbone.parameters()).device
+        slot_tokenizer = slot_wrapper.object_centric_tokenizer.to(
+            vision_device, dtype=torch.bfloat16
+        ).eval()
+        learned_model = SlotTemporalClassifier().to(vision_device).eval()
+        learned_state = load_file(args.learned_stage_checkpoint)
+        learned_model.load_state_dict(
+            {
+                key.removeprefix("model."): value
+                for key, value in learned_state.items()
+                if key.startswith("model.")
+            }
+        )
+        learned_threshold = float(learned_state["threshold"][0])
+        metadata["learned_threshold"] = learned_threshold
+        write_json(metadata_path, metadata)
     noop = np.asarray([0, 0, 0, 0, 0, 0, -1], np.float32)
     for _ in range(args.wait_steps):
         obs, _, done, _ = env.step(noop.tolist())
@@ -175,9 +224,39 @@ def main() -> None:
                     ["on", "porcelain_mug_1", "plate_1"]
                 )
             )
-            switched = (
-                latch.update(mug_on_plate) if args.oracle_stage_switch else False
-            )
+            learned_probability = None
+            if learned_model is not None:
+                pixels = processor.image_processor.apply_transform(
+                    Image.fromarray(
+                        np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+                    )
+                )[None].to(vision_device, dtype=torch.bfloat16)
+                with torch.inference_mode(), torch.autocast(
+                    "cuda", dtype=torch.bfloat16
+                ):
+                    patch = vision_backbone(pixels).reshape(1, -1, 2176)
+                    current_slots, _, _ = slot_tokenizer(
+                        patch, past_slots=learned_past_slots
+                    )
+                    learned_past_slots = current_slots[:, None]
+                    values = learned_model.slot_norm(current_slots[:, None].float())
+                    weights = learned_model.slot_score(values).squeeze(-1).softmax(-1)
+                    pooled = torch.einsum("bts,btsd->btd", weights, values)
+                    temporal_input = learned_model.input_projection(pooled)
+                    temporal_output, learned_hidden = learned_model.temporal(
+                        temporal_input, learned_hidden
+                    )
+                    learned_probability = float(
+                        torch.sigmoid(learned_model.head(temporal_output)[0, 0, 0])
+                    )
+                switched = latch.update(
+                    learned_probability >= learned_threshold
+                )
+            else:
+                switched = (
+                    latch.update(mug_on_plate)
+                    if args.oracle_stage_switch else False
+                )
             if switched and switch_step is None:
                 switch_step = step
             instruction = (
@@ -205,6 +284,9 @@ def main() -> None:
                 "mug_on_plate_oracle": mug_on_plate,
                 "oracle_switched": switched,
                 "oracle_switch_event": step == switch_step,
+                "stage_switched": switched,
+                "stage_switch_event": step == switch_step,
+                "learned_stage_probability": learned_probability,
                 "planned_action": action.tolist(),
                 "executed_action": action.tolist(),
                 "robot_state_before": extract_robot_state(before),
@@ -247,6 +329,8 @@ def main() -> None:
             "num_policy_steps": len(frames) - (10 if success else 0),
             "oracle_switch_step": switch_step,
             "oracle_switched": switch_step is not None,
+            "stage_switch_step": switch_step,
+            "stage_switched": switch_step is not None,
             "video": str(args.output.resolve()),
             "steps_jsonl": str(steps_path.resolve()),
         }

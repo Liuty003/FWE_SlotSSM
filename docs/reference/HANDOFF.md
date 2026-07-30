@@ -2985,3 +2985,33 @@ SlotSSM时序模型，用连续5帧预测替代Oracle触发器；最终只在未
 ```text
 /data2/lty/naive-e-slotssm-runs/task6-rgb-state-baseline-v1
 ```
+
+### 20.21 连续Slot时序触发器首次在线闭环
+
+新增：
+
+- `scripts/precompute_task6_visual_slots.py`：用冻结OpenVLA视觉骨干和已有Stage-1
+  tokenizer，为10条轨迹提取连续因果Slot，`past_slots`只在episode边界清零；
+- `scripts/train_task6_slot_temporal_state.py`：Slot注意力池化加两层因果GRU；
+- `run_task6_oracle_recovery.py`的非Oracle学习触发模式。
+
+3180帧全部完成Slot预计算。当前模型只读取RGB派生的`16×512` Slot和自身历史状态，
+仿真谓词仅写日志用于事后核对。在线开发预检：
+
+| Episode | 学习触发 | 最终结果 | 诊断 |
+|---:|---:|---:|---|
+| 6 | step 140 | 成功，236步 | 第一子目标真值首次成立后10步触发 |
+| 7 | step 147 | 成功，260步 | 第一子目标真值首次成立后23步触发 |
+| 9 | step 139 | 失败，520步 | 第一子目标从未成立，发生误触发 |
+
+视频和日志：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-learned-stage-v1
+```
+
+这是“连续Slot→时序状态→语言阶段切换→冻结OpenVLA动作”的首次非特权在线闭环，
+但时序头目前是GRU而非最终Mamba2，且只有6条训练episode。episode9说明现有Slot更
+容易识别总体任务进度，而不能可靠区分“杯子在盘附近”和正式`On`关系。下一步不动
+episode10–19保留集，采集episode20–49及失败停滞hard negatives，再比较GRU/Mamba2，
+达到轨迹级低误触发门槛后才运行保留集。
