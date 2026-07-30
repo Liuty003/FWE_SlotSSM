@@ -51,8 +51,31 @@ def stable_stage2(rows, confirm=5):
     return result
 
 
+def grasp_attempt_indices(rows, stage2):
+    attempts = []
+    for index, row in enumerate(rows):
+        before = row["privileged_object_state_before"]
+        pudding = np.asarray(before[PUDDING], np.float32)
+        eef = np.asarray(
+            row["robot_state_before"]["robot0_eef_pos"], np.float32
+        )
+        gripper = np.asarray(
+            row["robot_state_before"]["robot0_gripper_qpos"], np.float32
+        )
+        action = np.asarray(row["executed_action"], np.float32)
+        if (
+            stage2[index]
+            and float(action[6]) > 0.5
+            and float(np.abs(gripper).mean()) > 0.03
+            and float(np.linalg.norm(pudding - eef)) < 0.11
+        ):
+            attempts.append(index)
+    return attempts
+
+
 def label_episode(rows, horizon):
     stage2 = stable_stage2(rows)
+    attempts = grasp_attempt_indices(rows, stage2)
     output = []
     for index, row in enumerate(rows):
         future_index = min(index + horizon, len(rows) - 1)
@@ -112,7 +135,32 @@ def label_episode(rows, horizon):
             and gripper_open
             and near_pudding
         )
-        failed_acquisition = grasp_attempt and acquisition_lift < 0.01
+        future_failed_acquisition = grasp_attempt and acquisition_lift < 0.01
+        # A recovery trigger must be causal.  Only call the grasp currently
+        # failed after enough post-close observations exist and the pudding
+        # still has not lifted.  The prospective label above remains useful
+        # as a distinct future-risk target.
+        eligible_attempts = [
+            attempt for attempt in attempts
+            if 15 <= index - attempt <= 30
+        ]
+        acquisition_assessment_active = bool(eligible_attempts)
+        failed_acquisition = False
+        if eligible_attempts:
+            attempt = eligible_attempts[-1]
+            attempt_pudding = np.asarray(
+                rows[attempt]["privileged_object_state_before"][PUDDING],
+                np.float32,
+            )
+            current_pudding = np.asarray(
+                row["privileged_object_state_after"][PUDDING], np.float32
+            )
+            failed_acquisition = (
+                stage2[index]
+                and float(
+                    np.linalg.norm(current_pudding - attempt_pudding)
+                ) < 0.01
+            )
         slip_risk = (
             stage2[index]
             and gripper_closed
@@ -149,6 +197,8 @@ def label_episode(rows, horizon):
             "stall": bool(stall),
             "controlled": bool(controlled),
             "grasp_attempt": bool(grasp_attempt),
+            "acquisition_assessment_active": acquisition_assessment_active,
+            "future_failed_acquisition": bool(future_failed_acquisition),
             "failed_acquisition": bool(failed_acquisition),
             "slip_risk": bool(slip_risk),
             "collateral_risk": bool(collateral_risk),
