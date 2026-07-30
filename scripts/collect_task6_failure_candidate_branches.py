@@ -42,6 +42,11 @@ def arguments():
     parser.add_argument(
         "--target-role", choices=("pudding", "mug"), default="pudding"
     )
+    parser.add_argument(
+        "--macro-kind",
+        choices=("short", "cup-stable-grasp", "cup-place"),
+        default="short",
+    )
     parser.add_argument("--wait-steps", type=int, default=20)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--fps", type=int, default=20)
@@ -98,6 +103,56 @@ def candidate_macros():
     return candidates
 
 
+def cup_place_macros():
+    """Long candidates that complete mug grasp, transport, and release."""
+    # At task-6 episode 2's natural stall the gripper is already aligned with
+    # the mug. This prefix is independently verified after controller reset.
+    grasp = candidate_macros()["reclose_lift"]
+    transports = {
+        "place_fine_250_150": (.25, .15),
+        "place_fine_260_155": (.26, .155),
+        "place_fine_270_160": (.27, .16),
+        "place_fine_280_170": (.28, .17),
+        "place_fine_250_170": (.25, .17),
+        "place_fine_270_140": (.27, .14),
+        "place_fine_300_180": (.30, .18),
+        "place_fine_300_150": (.30, .15),
+    }
+    candidates = {}
+    for name, (dx, dy) in transports.items():
+        candidates[name] = np.concatenate((
+            grasp,
+            np.stack([action(x=dx, y=dy, gripper=1.)] * 80),
+            np.stack([action(z=-.35, gripper=1.)] * 8),
+            np.stack([action(gripper=-1.)] * 10),
+        ))
+    return candidates
+
+
+def stable_cup_grasp_macros():
+    """Verify cup grasps with a slower, longer lift before any transport."""
+    parameters = {
+        "stable_center": (0., 0., 0.),
+        "stable_diag_pm": (.22, -.22, 0.),
+        "stable_diag_pm_rminus": (.22, -.22, -.20),
+        "stable_diag_pm_rplus": (.22, -.22, .20),
+        "stable_y_minus": (0., -.30, 0.),
+        "stable_x_plus": (.30, 0., 0.),
+        "stable_diag_strong_pm": (.35, -.30, 0.),
+        "stable_diag_weak_pm": (.14, -.14, 0.),
+    }
+    candidates = {}
+    for name, (dx, dy, rz) in parameters.items():
+        candidates[name] = np.stack(
+            [action(z=.25)] * 4
+            + [np.asarray([dx, dy, 0., 0., 0., rz, -1.], np.float32)] * 6
+            + [action(z=-.25)] * 6
+            + [action(gripper=1.)] * 12
+            + [action(z=.15, gripper=1.)] * 20
+        )
+    return candidates
+
+
 def object_positions(obs):
     return {
         PUDDING: np.asarray(obs[PUDDING], np.float32),
@@ -139,7 +194,6 @@ def main():
         return env
 
     source_env = make_env()
-    fork_env = make_env()
     target_key = PUDDING if args.target_role == "pudding" else MUG
     target_name = (
         "chocolate_pudding_1"
@@ -167,39 +221,55 @@ def main():
         )
         args.output_dir.mkdir(parents=True, exist_ok=True)
         outcomes = []
-        for name, chunk in candidate_macros().items():
-            branch_obs = fork_env.regenerate_obs_from_state(sim_state)
-            restored = object_positions(branch_obs)
-            restore_error = max(
-                float(np.abs(restored[key] - before[key]).max())
-                for key in before
-            )
-            fork_env.env.timestep = 0
-            fork_env.env.done = False
-            frames = [
-                np.ascontiguousarray(
-                    branch_obs["agentview_image"][::-1, ::-1]
+        macros = {
+            "short": candidate_macros,
+            "cup-stable-grasp": stable_cup_grasp_macros,
+            "cup-place": cup_place_macros,
+        }[args.macro_kind]()
+        if args.macro_kind.startswith("cup-") and args.target_role != "mug":
+            raise ValueError("cup macros require --target-role mug")
+        for name, chunk in macros.items():
+            # A flattened MuJoCo state does not contain robosuite controller
+            # goals. Reusing one fork across candidates leaks controller
+            # history and corrupts later counterfactual labels.
+            branch_env = make_env()
+            try:
+                branch_obs = branch_env.regenerate_obs_from_state(sim_state)
+                controller = branch_env.env.robots[0].controller
+                controller.update(force=True)
+                controller.reset_goal()
+                restored = object_positions(branch_obs)
+                restore_error = max(
+                    float(np.abs(restored[key] - before[key]).max())
+                    for key in before
                 )
-            ]
-            for candidate_action in chunk:
-                branch_obs, _, done, _ = fork_env.step(
-                    candidate_action.tolist()
-                )
-                frames.append(np.ascontiguousarray(
+                branch_env.env.timestep = 0
+                branch_env.env.done = False
+                frames = [np.ascontiguousarray(
                     branch_obs["agentview_image"][::-1, ::-1]
+                )]
+                for candidate_action in chunk:
+                    branch_obs, _, done, _ = branch_env.step(
+                        candidate_action.tolist()
+                    )
+                    frames.append(np.ascontiguousarray(
+                        branch_obs["agentview_image"][::-1, ::-1]
+                    ))
+                    if done:
+                        break
+                after = object_positions(branch_obs)
+                after_eef = np.asarray(
+                    branch_obs["robot0_eef_pos"], np.float32
+                )
+                _, attached_after = extract_target_gripper_contact(
+                    branch_env.env.sim, target_name=target_name
+                )
+                mug_on_plate = bool(branch_env.env._eval_predicate(
+                    ["on", "porcelain_mug_1", "plate_1"]
                 ))
-                if done:
-                    break
-            after = object_positions(branch_obs)
-            after_eef = np.asarray(
-                branch_obs["robot0_eef_pos"], np.float32
-            )
-            _, attached_after = extract_target_gripper_contact(
-                fork_env.env.sim, target_name=target_name
-            )
-            mug_on_plate = bool(fork_env.env._eval_predicate(
-                ["on", "porcelain_mug_1", "plate_1"]
-            ))
+                task_success_after = bool(branch_env.check_success())
+            finally:
+                branch_env.close()
             target_displacement = float(
                 np.linalg.norm(after[target_key] - before[target_key])
             )
@@ -227,6 +297,7 @@ def main():
                 + 2 * min(target_displacement, .05)
                 - 12 * collateral_displacement
                 - float(args.target_role == "pudding" and not mug_on_plate)
+                + 5 * float(args.target_role == "mug" and mug_on_plate)
             )
             video = args.output_dir / f"{name}.mp4"
             imageio.mimsave(video, frames, fps=args.fps)
@@ -238,6 +309,7 @@ def main():
                 "attached_before": bool(attached_before),
                 "attached_after": bool(attached_after),
                 "target_role": args.target_role,
+                "macro_kind": args.macro_kind,
                 "target_displacement_m": target_displacement,
                 "target_lift_m": target_lift,
                 "target_goal_progress_m": goal_progress,
@@ -249,7 +321,7 @@ def main():
                 "mug_displacement_m": collateral_displacement,
                 "mug_on_plate_after": mug_on_plate,
                 "eef_target_distance_after_m": eef_target_distance,
-                "task_success_after": bool(fork_env.check_success()),
+                "task_success_after": task_success_after,
                 "teacher_value": teacher_value,
                 "video": str(video),
             }
@@ -267,6 +339,8 @@ def main():
                 "source_rollout": str(args.source_rollout),
                 "model_input_excludes_privileged_outcomes": True,
                 "same_sim_state_for_all_candidates": True,
+                "independent_controller_per_candidate": True,
+                "controller_goal_reset_after_restore": True,
                 "before": {
                     "target_goal_distance_m": before_distance,
                     "attached": bool(attached_before),
@@ -278,7 +352,6 @@ def main():
         )
     finally:
         source_env.close()
-        fork_env.close()
 
 
 if __name__ == "__main__":

@@ -3301,3 +3301,47 @@ episode3在step309时EEF与布丁相距0.104米，原8个局部候选全部无�
 
 候选教师价值应以最终杯—盘关系为主，接触/抬高只作中间效果；若所有完整候选均失败，
 才扩大搜索。完成episode2后，再用相同放置候选处理episode9。
+
+### 20.30 反事实分支控制器泄漏审计
+
+继续检查episode2时发现，旧采集器对不同候选只恢复MuJoCo flattened state，却复用同一
+robosuite控制器。控制器goal等内部状态不在该state中，因此后面的候选继承前面候选
+历史，造成虚假的抓取和放置成功。在线单独执行始终无法复现正是这一问题，而非单纯
+OpenVLA续跑失败。
+
+采集器已修复为每个候选创建独立环境，再从同一物理状态恢复。无泄漏复验结果：
+
+- 8个旧长杯子候选全部未抓住，杯子仅自然漂移约0.0029米；
+- 8个旧“稳定抓取”候选也全部`attached_after=false`；
+- 因此旧长候选数据和据此训练的排序器必须作废，不能报告其留出集正确率；
+- episode3和episode6使用的是单个在线短宏，不依赖这一跨候选控制器历史，已实现的
+  在线成功不受本问题影响。
+
+下一步不是继续拟合受污染标签，而是从独立分支重新搜索可复现的杯子抓取候选；至少
+出现真实正例后，再组合运输/放置动作、重新采集多episode标签并训练新排序器。新训练
+元数据同时记录sequence目录、Execution Mamba检查点和候选JSON，防止兼容形状相同的
+错误检查点被静默混用。
+
+独立环境恢复MuJoCo状态后，还必须调用OSC controller的`update(force=True)`和
+`reset_goal()`，使控制器目标与恢复后的当前EEF位置同步。补齐该步骤后，episode2短
+候选出现两个可信正例：`reclose_lift`抓住杯子并抬高约0.040米，
+`regrasp_x_minus`抬高约0.024米。
+
+以`reclose_lift`为前缀重新构造126步完整放置候选，episode2的8个候选中4个满足
+`On(mug, plate)`。随后按无泄漏协议重采episode0/1/4/5/6/7/8，并用episode2完全留出
+训练新排序器：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-cup-place-candidate-scorer-v2-clean
+```
+
+新排序器在episode2正确选中真实最优`place_fine_280_170`，teacher regret为0。在线
+执行也成功复现杯子放盘，`mug_completed_by_recovery=true`，视频：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v10-clean/task6-episode2.mp4
+```
+
+但冻结OpenVLA切换到布丁子目标后220步仍未达到最终LIBERO success。因此当前可信结论
+是“模型评分的长候选恢复了第一阶段”，不是“episode2整任务已经恢复成功”。下一步需
+审计该视频中的布丁失败，并把第二阶段也纳入候选重规划或训练恢复策略。

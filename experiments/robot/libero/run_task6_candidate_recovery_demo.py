@@ -28,6 +28,7 @@ from run_task6_oracle_recovery import PUDDING_SUBGOAL  # noqa: E402
 from scripts.collect_task6_failure_candidate_branches import (  # noqa: E402
     action,
     candidate_macros,
+    cup_place_macros,
 )
 from scripts.train_task6_execution_mamba import ExecutionMamba  # noqa: E402
 from scripts.train_task6_macro_candidate_scorer import (  # noqa: E402
@@ -49,6 +50,11 @@ def arguments():
     parser.add_argument("--sequence-dir", type=Path, required=True)
     parser.add_argument("--execution-checkpoint", type=Path, required=True)
     parser.add_argument("--candidate-checkpoint", type=Path, required=True)
+    parser.add_argument(
+        "--candidate-macro-kind",
+        choices=("short", "cup-place"),
+        default="short",
+    )
     parser.add_argument("--episode-id", type=int, default=6)
     parser.add_argument("--failure-timestep", type=int, default=211)
     parser.add_argument("--wait-steps", type=int, default=20)
@@ -91,7 +97,11 @@ def select_candidate(args, device):
         sequence["actions"][None, :args.failure_timestep + 1].to(device),
         return_hidden=True,
     )
-    macros = candidate_macros()
+    macros = (
+        cup_place_macros()
+        if args.candidate_macro_kind == "cup-place"
+        else candidate_macros()
+    )
     chunks = torch.tensor(
         np.stack(list(macros.values())), dtype=torch.float32, device=device
     )[None]
@@ -132,6 +142,15 @@ def main():
     env.seed(0)
     env.reset()
     obs = env.set_init_state(initial_states[args.episode_id])
+    # Construct the branch controller at the same point as the offline
+    # collector.  LIBERO / robosuite controllers retain state that is not
+    # represented in MuJoCo's flattened simulator state.
+    fork_env = OffScreenRenderEnv(
+        bddl_file_name=str(bddl), camera_heights=256, camera_widths=256
+    )
+    fork_env.seed(0)
+    fork_env.reset()
+    fork_env.set_init_state(initial_states[args.episode_id])
     rows = {
         int(row["timestep"]): row
         for row in (
@@ -156,6 +175,19 @@ def main():
                 image, f"REPLAY ORIGINAL  step={timestep}", (170, 170, 170)
             ))
             obs, _, _, _ = env.step(rows[timestep]["executed_action"])
+        # Candidate teachers are evaluated in a fresh fork environment.  The
+        # controller keeps internal goal state outside MuJoCo's flattened
+        # state, so online execution must use the same fork protocol rather
+        # than continue in the source controller instance.
+        sim_state = env.get_sim_state()
+        obs = fork_env.regenerate_obs_from_state(sim_state)
+        controller = fork_env.env.robots[0].controller
+        controller.update(force=True)
+        controller.reset_goal()
+        fork_env.env.timestep = 0
+        fork_env.env.done = False
+        env.close()
+        env = fork_env
         for index, candidate_action in enumerate(selected_chunk):
             image = np.ascontiguousarray(
                 obs["agentview_image"][::-1, ::-1]
@@ -166,6 +198,21 @@ def main():
                 (255, 180, 30),
             ))
             obs, _, _, _ = env.step(candidate_action.tolist())
+        mug_completed_by_recovery = bool(env.env._eval_predicate(
+            ["on", "porcelain_mug_1", "plate_1"]
+        ))
+        mug_position_after_recovery = np.asarray(
+            obs["porcelain_mug_1_pos"], dtype=np.float32
+        ).tolist()
+        plate_position_after_recovery = np.asarray(
+            obs["plate_1_pos"], dtype=np.float32
+        ).tolist()
+        if (
+            args.resume_mode in ("mug-then-pudding", "full-then-pudding")
+            and mug_completed_by_recovery
+        ):
+            stage_switched = True
+            stage_switch_step = 0
         for index in range(args.max_resume_steps):
             mug_on_plate = bool(env.env._eval_predicate(
                 ["on", "porcelain_mug_1", "plate_1"]
@@ -206,6 +253,7 @@ def main():
         "episode_id": args.episode_id,
         "failure_timestep": args.failure_timestep,
         "selected_candidate": selected_name,
+        "candidate_macro_kind": args.candidate_macro_kind,
         "predicted_values": predicted_values,
         "success": success,
         "original_replay_steps": args.failure_timestep,
@@ -214,6 +262,9 @@ def main():
                         - (10 if success else 0),
         "resume_mode": args.resume_mode,
         "stage_switch_step": stage_switch_step,
+        "mug_completed_by_recovery": mug_completed_by_recovery,
+        "mug_position_after_recovery": mug_position_after_recovery,
+        "plate_position_after_recovery": plate_position_after_recovery,
         "video": str(args.output),
     }
     args.output.with_suffix(".json").write_text(

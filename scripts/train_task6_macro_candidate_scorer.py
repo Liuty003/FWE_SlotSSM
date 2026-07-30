@@ -213,6 +213,9 @@ def main():
         "validation_episodes": [item["episode_id"] for item in validation],
         "reports": reports,
         "checkpoint": str(checkpoint),
+        "sequence_dir": str(args.sequence_dir),
+        "execution_checkpoint": str(args.execution_checkpoint),
+        "candidate_json": [str(path) for path in args.candidate_json],
         "limitation": "development smoke with five matched states",
     }, indent=2), encoding="utf-8")
 
