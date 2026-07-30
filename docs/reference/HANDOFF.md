@@ -2969,3 +2969,19 @@ LIBERO-10完成10 tasks × 10 initial states，共100条无故障注入基线；
 为单位，禁止随机拆分相邻帧造成泄漏。下一步依次训练RGB基线、冻结Slot特征分类头和
 SlotSSM时序模型，用连续5帧预测替代Oracle触发器；最终只在未查看的episode10–19报告
 独立结果。
+
+### 20.20 RGB单帧开发基线
+
+新增`scripts/train_task6_visual_state_baseline.py`，严格按episode划分：0–5训练、6/8
+验证、7/9开发测试。模型输入只有原始agent-view RGB，连续5帧阳性才触发。
+
+小型CNN在训练集达到99.4% balanced accuracy，但验证集为79.5%、开发测试为62.3%。
+更重要的是，纯阴性episode8和9均发生误触发，阳性episode7的触发延迟25帧。因此
+单帧RGB分类不满足在线切换要求；高帧准确率也不能代替轨迹级零误触发指标。下一步
+接入已有冻结Slot编码器并训练时序头，模型选择优先最小化轨迹误触发，再考虑检测延迟。
+
+产物：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-rgb-state-baseline-v1
+```
