@@ -3345,3 +3345,11 @@ OpenVLA续跑失败。
 但冻结OpenVLA切换到布丁子目标后220步仍未达到最终LIBERO success。因此当前可信结论
 是“模型评分的长候选恢复了第一阶段”，不是“episode2整任务已经恢复成功”。下一步需
 审计该视频中的布丁失败，并把第二阶段也纳入候选重规划或训练恢复策略。
+
+补充：v10同时持有source和fork两个EGL离屏环境，关闭source时导致fork渲染上下文损坏，
+所以视频中后段出现闪烁、条纹和白屏；编码文件本身没有损坏。脚本已改为保存物理状态
+后先关闭source，再创建唯一fork。正常可观看、物理结果相同的替代视频为：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v11-render-fixed/task6-episode2.mp4
+```

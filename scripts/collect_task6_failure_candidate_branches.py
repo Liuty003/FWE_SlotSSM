@@ -219,6 +219,8 @@ def main():
         _, attached_before = extract_target_gripper_contact(
             source_env.env.sim, target_name=target_name
         )
+        source_env.close()
+        source_env = None
         args.output_dir.mkdir(parents=True, exist_ok=True)
         outcomes = []
         macros = {
@@ -351,7 +353,8 @@ def main():
             encoding="utf-8",
         )
     finally:
-        source_env.close()
+        if source_env is not None:
+            source_env.close()
 
 
 if __name__ == "__main__":

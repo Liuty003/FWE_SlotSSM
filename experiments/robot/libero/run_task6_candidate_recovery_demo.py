@@ -142,15 +142,6 @@ def main():
     env.seed(0)
     env.reset()
     obs = env.set_init_state(initial_states[args.episode_id])
-    # Construct the branch controller at the same point as the offline
-    # collector.  LIBERO / robosuite controllers retain state that is not
-    # represented in MuJoCo's flattened simulator state.
-    fork_env = OffScreenRenderEnv(
-        bddl_file_name=str(bddl), camera_heights=256, camera_widths=256
-    )
-    fork_env.seed(0)
-    fork_env.reset()
-    fork_env.set_init_state(initial_states[args.episode_id])
     rows = {
         int(row["timestep"]): row
         for row in (
@@ -177,16 +168,24 @@ def main():
             obs, _, _, _ = env.step(rows[timestep]["executed_action"])
         # Candidate teachers are evaluated in a fresh fork environment.  The
         # controller keeps internal goal state outside MuJoCo's flattened
-        # state, so online execution must use the same fork protocol rather
-        # than continue in the source controller instance.
+        # state. Close the source EGL context before constructing the fork;
+        # keeping both alive can corrupt rendered frames.
         sim_state = env.get_sim_state()
+        env.close()
+        fork_env = OffScreenRenderEnv(
+            bddl_file_name=str(bddl),
+            camera_heights=256,
+            camera_widths=256,
+        )
+        fork_env.seed(0)
+        fork_env.reset()
+        fork_env.set_init_state(initial_states[args.episode_id])
         obs = fork_env.regenerate_obs_from_state(sim_state)
         controller = fork_env.env.robots[0].controller
         controller.update(force=True)
         controller.reset_goal()
         fork_env.env.timestep = 0
         fork_env.env.done = False
-        env.close()
         env = fork_env
         for index, candidate_action in enumerate(selected_chunk):
             image = np.ascontiguousarray(
