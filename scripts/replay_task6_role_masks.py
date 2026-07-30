@@ -25,7 +25,7 @@ from run_openvla_baseline import write_json  # noqa: E402
 
 TASK_SUITE = "libero_10"
 TASK_ID = 6
-ROLES = ("porcelain_mug_1", "plate_1")
+ROLES = ("porcelain_mug_1", "plate_1", "chocolate_pudding_1")
 
 
 def arguments():
@@ -127,6 +127,9 @@ def main():
                 role_masks["porcelain_mug_1"], args.mask_size
             ),
             "plate_masks": resize_masks(role_masks["plate_1"], args.mask_size),
+            "pudding_masks": resize_masks(
+                role_masks["chocolate_pudding_1"], args.mask_size
+            ),
             "labels": torch.tensor(labels, dtype=torch.float32),
             "timesteps": torch.arange(len(rows), dtype=torch.int64),
         }

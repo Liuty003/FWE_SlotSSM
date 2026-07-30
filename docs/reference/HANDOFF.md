@@ -3109,3 +3109,38 @@ proper temporal在线episode28在step125切换，最终255步成功；该新策�
 
 下一步应构造不使用仿真状态作为输入的可复现掉落/滑落开发轨迹，在线验证回退后重新
 抓杯；完成后再决定是否冻结开发并运行episode10–19。
+
+### 20.25 人工视频审计驱动的执行失败监督
+
+人工查看task6视频后发现，终局success不能表达执行质量：episode3存在到达布丁附近后
+卡住，episode6存在闭爪但布丁未被带起，episode7是边缘夹持/滑动，另有轨迹在放置
+布丁时碰到杯子。为利用这些自然差异，新增：
+
+- `build_task6_execution_labels.py`：从重放真值生成有效推进、停滞、受控搬运、抓取
+  未建立、滑落风险、附带碰撞风险和未来10步动作价值标签；
+- `replay_task6_role_masks.py`：在杯、盘之外增加布丁角色mask；
+- `train_task6_execution_slots.py`：RGB和已执行动作输入，共享三个grounded role
+  slots，联合训练三角色mask、六个执行头和动作价值头。
+
+仿真位置和mask只作教师标签，推理输入仍是RGB与动作。20条轨迹的三角色mask已全部
+精确回放，训练产物位于：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-execution-labels-v2
+/data2/lty/naive-e-slotssm-runs/task6-role-mask-supervision-v2-three-roles
+/data2/lty/naive-e-slotssm-runs/task6-execution-slots-v2-balanced
+```
+
+episode6/8验证集上杯、盘、布丁mask IoU为0.772/0.915/0.854；episode7/9开发测试为
+0.816/0.869/0.861。开发测试的有效推进、停滞、受控搬运balanced accuracy分别为
+0.939/0.833/0.992，说明人工观察中的“卡住”和“有没有稳定带动物体”可被视觉角色表示
+利用。
+
+但单帧“抓取未建立”头虽然在episode6检出4/5个正帧，却把episode7的47/94个阶段二
+帧误判为失败；滑落风险在验证/测试没有正例。当前动作价值头也只回归实际执行动作的
+未来结果，并未比较同一状态下多个候选。因此下一步不是宣称恢复器完成，而是：
+
+1. 把三个角色Slot和动作序列接入Mamba2，利用闭爪前后连续状态区分episode6与7；
+2. 在失败窗口保存仿真快照，分叉执行多个候选动作块，得到同状态反事实价值；
+3. 用共享时序主干同时输出当前失败、未来风险和候选价值，再在线选择候选；
+4. 保持episode10–19不可见，开发闭环稳定后才做一次性保留集评估。
