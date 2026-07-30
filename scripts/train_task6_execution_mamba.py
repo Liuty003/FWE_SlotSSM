@@ -79,7 +79,7 @@ class ExecutionMamba(nn.Module):
         self.binary_heads = nn.Linear(model_dim, len(HEADS))
         self.value_head = nn.Linear(model_dim, 1)
 
-    def forward(self, roles, geometry, actions):
+    def forward(self, roles, geometry, actions, return_hidden=False):
         mug, plate, pudding = roles[:, :, 0], roles[:, :, 1], roles[:, :, 2]
         geometry_features = [geometry]
         for delay in (5, 10, 20):
@@ -100,7 +100,10 @@ class ExecutionMamba(nn.Module):
         for layer, norm in zip(self.layers, self.norms):
             hidden = hidden + layer(norm(hidden))
         hidden = self.output_norm(hidden[:, :original])
-        return self.binary_heads(hidden), self.value_head(hidden).squeeze(-1)
+        outputs = (
+            self.binary_heads(hidden), self.value_head(hidden).squeeze(-1)
+        )
+        return (*outputs, hidden) if return_hidden else outputs
 
 
 def pad(episodes, device):

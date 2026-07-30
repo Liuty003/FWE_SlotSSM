@@ -3180,3 +3180,50 @@ episode7上的有效推进、停滞、受控搬运balanced accuracy分别为
 这解决的是“从连续RGB判断动作有没有真正生效”，尚未生成新恢复动作。下一步是在这些
 失败评估窗保存仿真快照，分叉执行多个候选动作块，训练真正的同状态候选价值排序；当前
 价值头仍只回归行为策略实际执行的单个动作。
+
+### 20.27 同状态候选分支、排序与在线成功
+
+新增`collect_task6_failure_candidate_branches.py`，从自然失败轨迹精确重放到执行失败
+评估窗，保存同一MuJoCo状态，并分别执行8个28步恢复宏动作。每个宏动作均由
+张爪/回撤、平移修正、下降、闭爪、验证上抬组成；另设低成本的继续闭爪上抬候选。
+仿真真值仅评估候选结果，不作为排序器在线输入。
+
+首批5个matched states揭示了条件依赖：
+
+- episode5/6已有夹爪接触，继续闭爪上抬最佳；
+- episode24无接触，直接上抬失败，居中重抓最佳；
+- episode22无稳定接触但物体仍在夹爪附近，再闭爪上抬可恢复；
+- episode3所有局部候选均失败，后续应支持“候选集不足/扩大搜索”，不能强制选择。
+
+新增`train_task6_macro_candidate_scorer.py`：冻结执行Mamba2，以失败时刻的128维时序状态
+编码上下文，对完整`28×7`动作块做排列等变评分。训练episode3/5/22/24，episode6
+完全留作验证；所有有非零价值差的组均选中教师最优候选，episode6选择
+`reclose_lift`且teacher regret为0。
+
+`run_task6_candidate_recovery_demo.py`已完成真正闭环：
+
+```text
+原轨迹重放至episode6 step211
+→ 候选排序选择reclose_lift
+→ 执行28步恢复宏动作
+→ 冻结OpenVLA继续执行布丁子目标
+→ 73步后LIBERO success
+```
+
+完整16.1秒、322帧视频：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v1/task6-episode6.mp4
+```
+
+候选对比视频及教师结果位于：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-candidate-branches-ep6-t211-v1
+/data2/lty/naive-e-slotssm-runs/task6-candidate-branches-train-v1
+/data2/lty/naive-e-slotssm-runs/task6-macro-candidate-scorer-v1
+```
+
+这是首条“时序失败状态→多个候选→学习排序→执行候选→OpenVLA续跑成功”的完整证据。
+当前只有5个matched states且候选为人工参数化宏动作，下一步应从每条失败窗采集多个
+时间点与不同幅度，增加拒绝/扩大搜索头，再做episode级成功率对照。
