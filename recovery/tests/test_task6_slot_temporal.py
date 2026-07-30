@@ -12,6 +12,13 @@ def test_slot_temporal_classifier_is_shape_preserving():
     assert model(torch.randn(2, 7, 16, 512)).shape == (2, 7)
 
 
+def test_role_relation_classifier_is_shape_preserving():
+    model = SlotTemporalClassifier(
+        model_dim=32, pooling="role_relation"
+    )
+    assert model(torch.randn(2, 7, 16, 512)).shape == (2, 7)
+
+
 def test_threshold_calibration_uses_episode_triggers():
     predictions = [
         {

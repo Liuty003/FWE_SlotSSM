@@ -226,3 +226,8 @@ episode20–29已采集完成：4成功、6失败，增加4323帧（1056正例�
 加入这些数据后，GRU与Mamba2都能无误触发地处理episode8并检测episode6、7，但仍在
 episode9误触发；显式用episode9校准阈值也无法解决。因此下一瓶颈是task6杯—盘关系
 Slot/grounding，而不是时序后端。episode10–19仍未查看。
+
+task6专用mask监督角色Slot随后解决了该问题：开发测试episode7正确触发，episode9
+完整520帧无误触发，frame balanced accuracy 99.15%。在线运行中episode6、7最终成功，
+episode9从未切换。该模型推理只读取RGB；杯/盘instance masks和仿真`On`谓词只用于
+训练监督。当前仍需加入grounded role slots上的Mamba2和状态回退，再运行保留集。

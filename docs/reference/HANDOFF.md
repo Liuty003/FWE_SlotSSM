@@ -3043,3 +3043,38 @@ episode10–19保留集，采集episode20–49及失败停滞hard negatives，�
 保住正例和去掉误触发，所以问题不在GRU/Mamba2选择或阈值，而在当前Slot来自
 LIBERO-Spatial训练，缺少精确杯—盘接触/支撑关系。下一步应针对task6微调Slot/关系头，
 以杯、盘mask或仿真投影几何作训练监督；在此之前不运行episode10–19。
+
+### 20.23 Task6专用Grounded Role Slots
+
+仅在已有通用Slot上增加双角色查询仍未消除episode9误触发，说明上游表示缺少对象关系
+信息。为此新增：
+
+- `scripts/replay_task6_role_masks.py`：精确重放并导出杯子/盘子64×64 instance masks；
+- `scripts/train_task6_grounded_role_slots.py`：RGB编码器同时预测杯/盘mask，按预测mask
+  池化两个角色Slot，再用`cup, plate, cup-plate, cup*plate`和几何量判断`On`关系；
+- `run_task6_oracle_recovery.py --grounded-role-checkpoint`在线模式。
+
+mask和仿真谓词只作训练监督；推理输入仍只有RGB。20个开发/训练episode全部完成mask
+导出，重放误差0米。最佳模型开发测试结果：
+
+- episode7正确触发，episode9整条520帧不触发；
+- frame balanced accuracy 99.15%；
+- mug/plate mask IoU分别为0.559/0.758。
+
+在线闭环：
+
+| Episode | Oracle首次成立 | 学习切换 | 最终结果 |
+|---:|---:|---:|---:|
+| 6 | 130 | 198 | 成功，264步 |
+| 7 | 124 | 119 | 成功，262步 |
+| 9 | 从未成立 | 从未切换 | 失败，520步 |
+
+视频：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-grounded-role-online-v1
+```
+
+这首次同时保住episode6/7的在线恢复并消除episode9假阳性，证明对象角色监督比单纯更换
+GRU/Mamba2更关键。当前关系头仍是单帧模型加连续5帧确认；下一步把两个grounded role
+slots作为Mamba2输入，加入“完成后又掉落”的状态回退头，再决定是否达到保留集门槛。

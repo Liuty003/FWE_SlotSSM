@@ -40,6 +40,10 @@ def arguments():
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--model-dim", type=int, default=128)
     parser.add_argument("--backend", choices=("gru", "mamba2"), default="gru")
+    parser.add_argument(
+        "--pooling", choices=("single_attention", "role_relation"),
+        default="single_attention",
+    )
     parser.add_argument("--confirm-frames", type=int, default=5)
     parser.add_argument("--seed", type=int, default=20260730)
     return parser.parse_args()
@@ -66,15 +70,34 @@ def load_split(slot_dirs: list[Path], episodes: tuple[int, ...]) -> list[dict]:
 
 
 class SlotTemporalClassifier(nn.Module):
-    def __init__(self, slot_dim=512, model_dim=128, backend="gru"):
+    def __init__(
+        self, slot_dim=512, model_dim=128, backend="gru",
+        pooling="single_attention",
+    ):
         super().__init__()
         self.backend = backend
+        self.pooling = pooling
         self.slot_norm = nn.LayerNorm(slot_dim)
-        self.slot_score = nn.Sequential(
-            nn.Linear(slot_dim, model_dim), nn.Tanh(), nn.Linear(model_dim, 1)
-        )
+        if pooling == "single_attention":
+            self.slot_score = nn.Sequential(
+                nn.Linear(slot_dim, model_dim), nn.Tanh(), nn.Linear(model_dim, 1)
+            )
+            self.role_queries = None
+            self.role_attention = None
+            projection_dim = slot_dim
+        elif pooling == "role_relation":
+            self.slot_score = None
+            self.role_queries = nn.Parameter(torch.randn(2, slot_dim) * 0.02)
+            self.role_attention = nn.MultiheadAttention(
+                slot_dim, 8, batch_first=True
+            )
+            projection_dim = slot_dim * 4
+        else:
+            raise ValueError(f"unsupported pooling: {pooling}")
         self.input_projection = nn.Sequential(
-            nn.Linear(slot_dim, model_dim), nn.GELU(), nn.LayerNorm(model_dim)
+            nn.Linear(projection_dim, model_dim),
+            nn.GELU(),
+            nn.LayerNorm(model_dim),
         )
         if backend == "gru":
             self.temporal = nn.GRU(
@@ -105,8 +128,20 @@ class SlotTemporalClassifier(nn.Module):
 
     def forward(self, slots):
         values = self.slot_norm(slots)
-        weights = self.slot_score(values).squeeze(-1).softmax(dim=-1)
-        pooled = torch.einsum("bts,btsd->btd", weights, values)
+        if self.pooling == "single_attention":
+            weights = self.slot_score(values).squeeze(-1).softmax(dim=-1)
+            pooled = torch.einsum("bts,btsd->btd", weights, values)
+        else:
+            batch, timesteps, num_slots, dim = values.shape
+            flat = values.reshape(batch * timesteps, num_slots, dim)
+            queries = self.role_queries[None].expand(len(flat), -1, -1)
+            roles, _ = self.role_attention(
+                queries, flat, flat, need_weights=False
+            )
+            first, second = roles[:, 0], roles[:, 1]
+            pooled = torch.cat(
+                (first, second, first - second, first * second), dim=-1
+            ).reshape(batch, timesteps, -1)
         hidden = self.input_projection(pooled)
         if self.backend == "gru":
             hidden, _ = self.temporal(hidden)
@@ -213,7 +248,7 @@ def main():
     }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SlotTemporalClassifier(
-        model_dim=args.model_dim, backend=args.backend
+        model_dim=args.model_dim, backend=args.backend, pooling=args.pooling
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=1e-4
@@ -292,8 +327,12 @@ def main():
     )
     result = {
         "schema_version": 1,
-        "kind": f"causal_continuous_slot_{args.backend}_subgoal_classifier",
+        "kind": (
+            f"causal_continuous_slot_{args.pooling}_{args.backend}_"
+            "subgoal_classifier"
+        ),
         "backend": args.backend,
+        "pooling": args.pooling,
         "input_contract": "16x512 continuous slots only; no simulator state",
         "episode_split": split_ids,
         "best_epoch": best["epoch"],

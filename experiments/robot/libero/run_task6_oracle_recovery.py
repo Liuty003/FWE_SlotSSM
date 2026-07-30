@@ -81,6 +81,7 @@ def arguments() -> argparse.Namespace:
     )
     parser.add_argument("--learned-stage-checkpoint", type=Path)
     parser.add_argument("--slot-checkpoint", type=Path)
+    parser.add_argument("--grounded-role-checkpoint", type=Path)
     parser.add_argument(
         "--center-crop", action=argparse.BooleanOptionalAction, default=True
     )
@@ -121,6 +122,10 @@ def main() -> None:
         raise ValueError("--slot-checkpoint is required for learned stage switching")
     if args.learned_stage_checkpoint and args.oracle_stage_switch:
         raise ValueError("use --no-oracle-stage-switch with learned switching")
+    if args.grounded_role_checkpoint and args.oracle_stage_switch:
+        raise ValueError("use --no-oracle-stage-switch with grounded role switching")
+    if args.learned_stage_checkpoint and args.grounded_role_checkpoint:
+        raise ValueError("choose one learned stage checkpoint")
     from libero.libero import benchmark, get_libero_path
     from libero.libero.envs import OffScreenRenderEnv
 
@@ -149,9 +154,13 @@ def main() -> None:
         "schema_version": 1,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "demo_kind": (
-            "task6_learned_slot_temporal_stage_switch"
-            if args.learned_stage_checkpoint
-            else "task6_oracle_stage_switch_ceiling"
+            "task6_grounded_role_stage_switch"
+            if args.grounded_role_checkpoint
+            else (
+                "task6_learned_slot_temporal_stage_switch"
+                if args.learned_stage_checkpoint
+                else "task6_oracle_stage_switch_ceiling"
+            )
         ),
         "checkpoint": args.checkpoint,
         "task_suite": TASK_SUITE,
@@ -162,14 +171,22 @@ def main() -> None:
         "oracle_stage_switch": args.oracle_stage_switch,
         "subgoal_confirm_steps": args.subgoal_confirm_steps,
         "stage_switch_policy_input": (
-            "continuous RGB-derived slots and causal temporal hidden state"
-            if args.learned_stage_checkpoint
-            else "simulator On(porcelain_mug_1, plate_1) predicate only"
+            "RGB-derived mask-supervised mug/plate role slots"
+            if args.grounded_role_checkpoint
+            else (
+                "continuous RGB-derived slots and causal temporal hidden state"
+                if args.learned_stage_checkpoint
+                else "simulator On(porcelain_mug_1, plate_1) predicate only"
+            )
         ),
         "oracle_action_access": False,
         "learned_stage_checkpoint": (
             str(args.learned_stage_checkpoint)
             if args.learned_stage_checkpoint else None
+        ),
+        "grounded_role_checkpoint": (
+            str(args.grounded_role_checkpoint)
+            if args.grounded_role_checkpoint else None
         ),
         "completed": False,
         "success": False,
@@ -182,6 +199,7 @@ def main() -> None:
     learned_model = slot_tokenizer = vision_backbone = vision_device = None
     learned_hidden = learned_past_slots = None
     learned_threshold = None
+    grounded_transform = None
     if args.learned_stage_checkpoint:
         from prismatic.extern.hf.modeling_prismatic import (
             OpenVLAForActionPrediction_SlotAtt,
@@ -209,6 +227,21 @@ def main() -> None:
         learned_threshold = float(learned_state["threshold"][0])
         metadata["learned_threshold"] = learned_threshold
         write_json(metadata_path, metadata)
+    elif args.grounded_role_checkpoint:
+        from torchvision import transforms
+        from scripts.train_task6_grounded_role_slots import GroundedRoleSlots
+
+        vision_device = input_device
+        learned_model = GroundedRoleSlots().to(vision_device).eval()
+        learned_model.load_state_dict(load_file(args.grounded_role_checkpoint))
+        learned_threshold = 0.5
+        grounded_transform = transforms.Compose([
+            transforms.Resize((128, 128)),
+            transforms.ToTensor(),
+            transforms.Normalize((.485, .456, .406), (.229, .224, .225)),
+        ])
+        metadata["learned_threshold"] = learned_threshold
+        write_json(metadata_path, metadata)
     noop = np.asarray([0, 0, 0, 0, 0, 0, -1], np.float32)
     for _ in range(args.wait_steps):
         obs, _, done, _ = env.step(noop.tolist())
@@ -226,29 +259,40 @@ def main() -> None:
             )
             learned_probability = None
             if learned_model is not None:
-                pixels = processor.image_processor.apply_transform(
-                    Image.fromarray(
-                        np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
-                    )
-                )[None].to(vision_device, dtype=torch.bfloat16)
-                with torch.inference_mode(), torch.autocast(
-                    "cuda", dtype=torch.bfloat16
-                ):
-                    patch = vision_backbone(pixels).reshape(1, -1, 2176)
-                    current_slots, _, _ = slot_tokenizer(
-                        patch, past_slots=learned_past_slots
-                    )
-                    learned_past_slots = current_slots[:, None]
-                    values = learned_model.slot_norm(current_slots[:, None].float())
-                    weights = learned_model.slot_score(values).squeeze(-1).softmax(-1)
-                    pooled = torch.einsum("bts,btsd->btd", weights, values)
-                    temporal_input = learned_model.input_projection(pooled)
-                    temporal_output, learned_hidden = learned_model.temporal(
-                        temporal_input, learned_hidden
-                    )
-                    learned_probability = float(
-                        torch.sigmoid(learned_model.head(temporal_output)[0, 0, 0])
-                    )
+                raw_image = Image.fromarray(
+                    np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+                )
+                if grounded_transform is not None:
+                    pixels = grounded_transform(raw_image)[None].to(vision_device)
+                    with torch.inference_mode():
+                        _, relation_logits, _ = learned_model(pixels)
+                        learned_probability = float(
+                            torch.sigmoid(relation_logits[0])
+                        )
+                else:
+                    pixels = processor.image_processor.apply_transform(
+                        raw_image
+                    )[None].to(vision_device, dtype=torch.bfloat16)
+                    with torch.inference_mode(), torch.autocast(
+                        "cuda", dtype=torch.bfloat16
+                    ):
+                        patch = vision_backbone(pixels).reshape(1, -1, 2176)
+                        current_slots, _, _ = slot_tokenizer(
+                            patch, past_slots=learned_past_slots
+                        )
+                        learned_past_slots = current_slots[:, None]
+                        values = learned_model.slot_norm(current_slots[:, None].float())
+                        weights = learned_model.slot_score(values).squeeze(-1).softmax(-1)
+                        pooled = torch.einsum("bts,btsd->btd", weights, values)
+                        temporal_input = learned_model.input_projection(pooled)
+                        temporal_output, learned_hidden = learned_model.temporal(
+                            temporal_input, learned_hidden
+                        )
+                        learned_probability = float(
+                            torch.sigmoid(
+                                learned_model.head(temporal_output)[0, 0, 0]
+                            )
+                        )
                 switched = latch.update(
                     learned_probability >= learned_threshold
                 )
