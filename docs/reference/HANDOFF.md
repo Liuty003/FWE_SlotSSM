@@ -3015,3 +3015,31 @@ SlotSSM时序模型，用连续5帧预测替代Oracle触发器；最终只在未
 容易识别总体任务进度，而不能可靠区分“杯子在盘附近”和正式`On`关系。下一步不动
 episode10–19保留集，采集episode20–49及失败停滞hard negatives，再比较GRU/Mamba2，
 达到轨迹级低误触发门槛后才运行保留集。
+
+### 20.22 非保留数据扩充与GRU/Mamba2对照
+
+保持episode10–19完全不查看，新采集episode20–29的10条标准初始状态Oracle轨迹：
+4条成功（22/25/26/27），6条失败（20/21/23/24/28/29）。其中20/21/23/29从未完成
+第一子目标，24完成第一子目标但后续动作失败，28短暂放好后又掉落。后两类说明后续
+状态不能永远单向锁存。
+
+新增数据共4323帧、1056个`mug_on_plate`正例，所有动作重放最大位置误差仍为0米；
+全部完成连续Slot预计算。路径：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-oracle-stage-switch-train20-29-v1
+/data2/lty/naive-e-slotssm-runs/task6-oracle-visual-dataset-train20-29-v1
+/data2/lty/naive-e-slotssm-runs/task6-continuous-slots-train20-29-v1
+```
+
+训练集扩为episode0–5和20–29，验证仍为6/8，开发测试仍为7/9。同一Slot输入下：
+
+| 时序后端 | episode6 | episode8误触发 | episode7 | episode9误触发 |
+|---|---:|---:|---:|---:|
+| GRU | 准时检出 | 无 | 提前4帧检出 | 有 |
+| Mamba2 | 准时检出 | 无 | 提前7帧检出 | 有 |
+
+两者都修复了episode8，却都无法区分episode9。将episode9显式用于阈值校准也不能同时
+保住正例和去掉误触发，所以问题不在GRU/Mamba2选择或阈值，而在当前Slot来自
+LIBERO-Spatial训练，缺少精确杯—盘接触/支撑关系。下一步应针对task6微调Slot/关系头，
+以杯、盘mask或仿真投影几何作训练监督；在此之前不运行episode10–19。

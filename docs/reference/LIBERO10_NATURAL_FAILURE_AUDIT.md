@@ -221,3 +221,8 @@ RGB单帧开发基线已完成（episode0–5训练、6/8验证、7/9开发测�
 触发；episode9因第一子目标从未成立却在step139误触发而失败。该结果证明学习状态可
 实际驱动冻结OpenVLA切换，但尚未满足可靠性门槛。下一轮应从未保留的episode20–49
 增加场景变化和第一阶段停滞hard negatives，episode10–19继续保持不可见。
+
+episode20–29已采集完成：4成功、6失败，增加4323帧（1056正例）且重放误差0米。
+加入这些数据后，GRU与Mamba2都能无误触发地处理episode8并检测episode6、7，但仍在
+episode9误触发；显式用episode9校准阈值也无法解决。因此下一瓶颈是task6杯—盘关系
+Slot/grounding，而不是时序后端。episode10–19仍未查看。

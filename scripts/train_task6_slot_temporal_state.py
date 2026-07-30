@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from safetensors.torch import load_file, save_file
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -22,10 +23,15 @@ from scripts.train_task6_visual_state_baseline import (
     parse_ids,
 )
 
+try:
+    from mamba_ssm import Mamba2
+except ImportError:
+    Mamba2 = None
+
 
 def arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--slot-dir", type=Path, required=True)
+    parser.add_argument("--slot-dir", type=Path, nargs="+", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--train-episodes", default="0,1,2,3,4,5")
     parser.add_argument("--validation-episodes", default="6,8")
@@ -33,15 +39,22 @@ def arguments():
     parser.add_argument("--epochs", type=int, default=120)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--model-dim", type=int, default=128)
+    parser.add_argument("--backend", choices=("gru", "mamba2"), default="gru")
     parser.add_argument("--confirm-frames", type=int, default=5)
     parser.add_argument("--seed", type=int, default=20260730)
     return parser.parse_args()
 
 
-def load_split(slot_dir: Path, episodes: tuple[int, ...]) -> list[dict]:
+def load_split(slot_dirs: list[Path], episodes: tuple[int, ...]) -> list[dict]:
     result = []
     for episode in episodes:
-        tensors = load_file(slot_dir / f"task6-episode{episode}-slots.safetensors")
+        name = f"task6-episode{episode}-slots.safetensors"
+        matches = [directory / name for directory in slot_dirs if (directory / name).is_file()]
+        if len(matches) != 1:
+            raise FileNotFoundError(
+                f"expected exactly one shard for episode {episode}, found {matches}"
+            )
+        tensors = load_file(matches[0])
         result.append(
             {
                 "episode_id": episode,
@@ -53,8 +66,9 @@ def load_split(slot_dir: Path, episodes: tuple[int, ...]) -> list[dict]:
 
 
 class SlotTemporalClassifier(nn.Module):
-    def __init__(self, slot_dim=512, model_dim=128):
+    def __init__(self, slot_dim=512, model_dim=128, backend="gru"):
         super().__init__()
+        self.backend = backend
         self.slot_norm = nn.LayerNorm(slot_dim)
         self.slot_score = nn.Sequential(
             nn.Linear(slot_dim, model_dim), nn.Tanh(), nn.Linear(model_dim, 1)
@@ -62,16 +76,48 @@ class SlotTemporalClassifier(nn.Module):
         self.input_projection = nn.Sequential(
             nn.Linear(slot_dim, model_dim), nn.GELU(), nn.LayerNorm(model_dim)
         )
-        self.temporal = nn.GRU(
-            model_dim, model_dim, num_layers=2, batch_first=True, dropout=0.1
-        )
+        if backend == "gru":
+            self.temporal = nn.GRU(
+                model_dim, model_dim, num_layers=2,
+                batch_first=True, dropout=0.1,
+            )
+            self.temporal_layers = nn.ModuleList()
+            self.temporal_norms = nn.ModuleList()
+        elif backend == "mamba2":
+            if Mamba2 is None:
+                raise RuntimeError("mamba_ssm.Mamba2 is unavailable")
+            self.temporal = None
+            self.temporal_layers = nn.ModuleList(
+                [
+                    Mamba2(
+                        d_model=model_dim, d_state=64, d_conv=4, expand=2,
+                        headdim=16, use_mem_eff_path=False,
+                    )
+                    for _ in range(2)
+                ]
+            )
+            self.temporal_norms = nn.ModuleList(
+                [nn.LayerNorm(model_dim) for _ in range(2)]
+            )
+        else:
+            raise ValueError(f"unsupported backend: {backend}")
         self.head = nn.Linear(model_dim, 1)
 
     def forward(self, slots):
         values = self.slot_norm(slots)
         weights = self.slot_score(values).squeeze(-1).softmax(dim=-1)
         pooled = torch.einsum("bts,btsd->btd", weights, values)
-        hidden, _ = self.temporal(self.input_projection(pooled))
+        hidden = self.input_projection(pooled)
+        if self.backend == "gru":
+            hidden, _ = self.temporal(hidden)
+        else:
+            original_length = hidden.shape[1]
+            padding = (-original_length) % 8
+            if padding:
+                hidden = F.pad(hidden, (0, 0, 0, padding))
+            for mixer, norm in zip(self.temporal_layers, self.temporal_norms):
+                hidden = hidden + mixer(norm(hidden))
+            hidden = hidden[:, :original_length]
         return self.head(hidden).squeeze(-1)
 
 
@@ -166,7 +212,9 @@ def main():
         name: load_split(args.slot_dir, ids) for name, ids in split_ids.items()
     }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SlotTemporalClassifier(model_dim=args.model_dim).to(device)
+    model = SlotTemporalClassifier(
+        model_dim=args.model_dim, backend=args.backend
+    ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=1e-4
     )
@@ -244,7 +292,8 @@ def main():
     )
     result = {
         "schema_version": 1,
-        "kind": "causal_continuous_slot_gru_subgoal_classifier",
+        "kind": f"causal_continuous_slot_{args.backend}_subgoal_classifier",
+        "backend": args.backend,
         "input_contract": "16x512 continuous slots only; no simulator state",
         "episode_split": split_ids,
         "best_epoch": best["epoch"],
