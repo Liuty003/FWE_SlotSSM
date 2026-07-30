@@ -76,6 +76,16 @@ def grasp_attempt_indices(rows, stage2):
 def label_episode(rows, horizon):
     stage2 = stable_stage2(rows)
     attempts = grasp_attempt_indices(rows, stage2)
+    stage2_start = next(
+        (index for index, value in enumerate(stage2) if value), None
+    )
+    stage2_mug = (
+        np.asarray(
+            rows[stage2_start]["privileged_object_state_before"][MUG],
+            np.float32,
+        )
+        if stage2_start is not None else None
+    )
     output = []
     for index, row in enumerate(rows):
         future_index = min(index + horizon, len(rows) - 1)
@@ -101,6 +111,10 @@ def label_episode(rows, horizon):
         progress = distance - future_distance
         pudding_displacement = float(np.linalg.norm(pudding_future - pudding))
         mug_displacement = float(np.linalg.norm(mug_future - mug))
+        mug_stage_displacement = (
+            float(np.linalg.norm(mug - stage2_mug))
+            if stage2_mug is not None and stage2[index] else 0.0
+        )
         relative = pudding - eef
         future_relative = pudding_future - eef_future
         relative_drift = float(np.linalg.norm(future_relative - relative))
@@ -152,14 +166,24 @@ def label_episode(rows, horizon):
                 rows[attempt]["privileged_object_state_before"][PUDDING],
                 np.float32,
             )
+            attempt_eef = np.asarray(
+                rows[attempt]["robot_state_before"]["robot0_eef_pos"],
+                np.float32,
+            )
             current_pudding = np.asarray(
                 row["privileged_object_state_after"][PUDDING], np.float32
             )
+            current_eef = np.asarray(
+                row["robot_state_after"]["robot0_eef_pos"], np.float32
+            )
+            acquisition_relative_drift = float(np.linalg.norm(
+                (current_pudding - current_eef)
+                - (attempt_pudding - attempt_eef)
+            ))
             failed_acquisition = (
                 stage2[index]
-                and float(
-                    np.linalg.norm(current_pudding - attempt_pudding)
-                ) < 0.01
+                and float(current_pudding[2] - attempt_pudding[2]) < 0.01
+                and acquisition_relative_drift > 0.02
             )
         slip_risk = (
             stage2[index]
@@ -173,7 +197,14 @@ def label_episode(rows, horizon):
         )
         collateral_risk = (
             stage2[index]
-            and (mug_displacement > 0.012 or not mug_on_plate_future)
+            and (
+                # Successful stage-1 placements settle by up to 7.6 mm in
+                # this development set.  Eight millimetres separates that
+                # settling from the visible task-6 collateral collisions.
+                mug_stage_displacement > 0.008
+                or mug_displacement > 0.012
+                or not mug_on_plate_future
+            )
         )
         candidate_value = float(
             progress
@@ -191,6 +222,7 @@ def label_episode(rows, horizon):
             "pudding_displacement_m": pudding_displacement,
             "pudding_eef_relative_drift_m": relative_drift,
             "mug_displacement_m": mug_displacement,
+            "mug_stage_displacement_m": mug_stage_displacement,
             "gripper_closed": bool(gripper_closed),
             "near_pudding": bool(near_pudding),
             "effective_progress": bool(effective_progress),
@@ -204,6 +236,10 @@ def label_episode(rows, horizon):
             "collateral_risk": bool(collateral_risk),
             "candidate_value": candidate_value,
             "executed_action": row["executed_action"],
+            "robot_features": [
+                *eef.tolist(),
+                float(np.abs(gripper).mean()),
+            ],
         })
     return output
 

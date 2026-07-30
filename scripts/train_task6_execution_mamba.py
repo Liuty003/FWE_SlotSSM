@@ -39,6 +39,10 @@ def arguments():
     parser.add_argument("--test-episodes", default="7,9")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--model-dim", type=int, default=128)
+    parser.add_argument(
+        "--robot-features", action="store_true",
+        help="Use EEF xyz and gripper aperture with causal differences.",
+    )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--seed", type=int, default=20260730)
     return parser.parse_args()
@@ -55,14 +59,20 @@ def load_episodes(root, ids):
 
 
 class ExecutionMamba(nn.Module):
-    def __init__(self, model_dim=128):
+    def __init__(self, model_dim=128, robot_feature_dim=0):
         super().__init__()
+        self.robot_feature_dim = robot_feature_dim
         # Three roles, three directed relational differences, and the action.
         # Geometry plus explicit causal finite differences preserve motion
         # evidence that appearance-slot pooling tends to discard.
         self.input_projection = nn.Sequential(
-            nn.LayerNorm(96 * 6 + 3 * 3 * 4 + 7),
-            nn.Linear(96 * 6 + 3 * 3 * 4 + 7, model_dim),
+            nn.LayerNorm(
+                96 * 6 + 3 * 3 * 4 + robot_feature_dim * 4 + 7
+            ),
+            nn.Linear(
+                96 * 6 + 3 * 3 * 4 + robot_feature_dim * 4 + 7,
+                model_dim,
+            ),
             nn.GELU(),
         )
         self.layers = nn.ModuleList([
@@ -79,17 +89,33 @@ class ExecutionMamba(nn.Module):
         self.binary_heads = nn.Linear(model_dim, len(HEADS))
         self.value_head = nn.Linear(model_dim, 1)
 
-    def forward(self, roles, geometry, actions, return_hidden=False):
+    def forward(
+        self, roles, geometry, actions, robot_features=None,
+        return_hidden=False
+    ):
         mug, plate, pudding = roles[:, :, 0], roles[:, :, 1], roles[:, :, 2]
         geometry_features = [geometry]
+        robot_motion_features = (
+            [robot_features] if self.robot_feature_dim else []
+        )
         for delay in (5, 10, 20):
             difference = torch.zeros_like(geometry)
             difference[:, delay:] = geometry[:, delay:] - geometry[:, :-delay]
             geometry_features.append(difference)
+            if self.robot_feature_dim:
+                robot_difference = torch.zeros_like(robot_features)
+                robot_difference[:, delay:] = (
+                    robot_features[:, delay:] - robot_features[:, :-delay]
+                )
+                robot_motion_features.append(robot_difference)
         inputs = torch.cat((
             mug, plate, pudding,
             pudding - mug, pudding - plate, mug - plate,
             torch.cat(geometry_features, dim=-1).flatten(2),
+            *(
+                [torch.cat(robot_motion_features, dim=-1)]
+                if self.robot_feature_dim else []
+            ),
             actions,
         ), dim=-1)
         hidden = self.input_projection(inputs)
@@ -112,6 +138,7 @@ def pad(episodes, device):
     roles = torch.zeros(batch, length, 3, 96)
     geometry = torch.zeros(batch, length, 3, 3)
     actions = torch.zeros(batch, length, 7)
+    robot_features = torch.zeros(batch, length, 4)
     targets = torch.zeros(batch, length, len(HEADS))
     values = torch.zeros(batch, length)
     active = torch.zeros(batch, length, dtype=torch.bool)
@@ -122,6 +149,8 @@ def pad(episodes, device):
         roles[index, :count] = item["role_slots"]
         geometry[index, :count] = item["role_geometry"]
         actions[index, :count] = item["actions"]
+        if "robot_features" in item:
+            robot_features[index, :count] = item["robot_features"]
         targets[index, :count] = item["targets"]
         values[index, :count] = item["candidate_values"]
         active[index, :count] = item["stage2_active"]
@@ -130,7 +159,8 @@ def pad(episodes, device):
     return tuple(
         tensor.to(device)
         for tensor in (
-            roles, geometry, actions, targets, values, active, assessment, valid
+            roles, geometry, actions, robot_features, targets, values,
+            active, assessment, valid
         )
     )
 
@@ -147,6 +177,10 @@ def evaluate(model, episodes, device):
             item["role_slots"][None].to(device),
             item["role_geometry"][None].to(device),
             item["actions"][None].to(device),
+            *(
+                [item["robot_features"][None].to(device)]
+                if model.robot_feature_dim else []
+            ),
         )
         active = item["stage2_active"].bool()
         logits = logits[0].cpu()
@@ -216,11 +250,16 @@ def main():
         for name, ids in split_ids.items()
     }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = ExecutionMamba(args.model_dim).to(device)
+    model = ExecutionMamba(
+        args.model_dim, robot_feature_dim=4 if args.robot_features else 0
+    ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=1e-4
     )
-    roles, geometry, actions, targets, values, active, assessment, valid = pad(
+    (
+        roles, geometry, actions, robot_features, targets, values,
+        active, assessment, valid,
+    ) = pad(
         splits["train"], device
     )
     head_masks = active[:, :, None].expand_as(targets).clone()
@@ -231,7 +270,9 @@ def main():
     best, history = None, []
     for epoch in range(1, args.epochs + 1):
         model.train()
-        binary, predicted_values = model(roles, geometry, actions)
+        binary, predicted_values = model(
+            roles, geometry, actions, robot_features
+        )
         element_loss = F.binary_cross_entropy_with_logits(
             binary, targets, pos_weight=pos_weight, reduction="none"
         )
@@ -247,8 +288,10 @@ def main():
         validation = evaluate(model, splits["validation"], device)
         score = sum(
             validation[name]["balanced_accuracy"]
-            for name in ("effective_progress", "stall", "controlled",
-                         "failed_acquisition")
+            for name in (
+                "effective_progress", "stall", "controlled",
+                "failed_acquisition", "slip_risk", "collateral_risk",
+            )
         )
         history.append({
             "epoch": epoch, "loss": float(loss),
@@ -279,6 +322,7 @@ def main():
         "schema_version": 1,
         "kind": "three_grounded_roles_action_conditioned_execution_mamba2",
         "head_order": HEADS,
+        "robot_feature_dim": model.robot_feature_dim,
         "failed_acquisition_threshold": FAILED_ACQUISITION_THRESHOLD,
         "motion_gate_center": MOTION_GATE_CENTER,
         "motion_gate_scale": MOTION_GATE_SCALE,

@@ -57,6 +57,7 @@ class EpisodeFrames(Dataset):
             torch.tensor(float(row["candidate_value"])),
             torch.tensor(bool(row["stage2_active"])),
             torch.tensor(bool(row["acquisition_assessment_active"])),
+            torch.tensor(row["robot_features"], dtype=torch.float32),
             int(row["timestep"]),
         )
 
@@ -92,11 +93,17 @@ def main():
                 dataset, batch_size=args.batch_size, shuffle=False,
                 num_workers=args.workers, pin_memory=True,
             )
-            slots, actions, targets, values, active, assessment, timesteps = (
-                [] for _ in range(7)
+            (
+                slots, actions, targets, values, active, assessment,
+                robot_features, timesteps,
+            ) = (
+                [] for _ in range(8)
             )
             geometries = []
-            for images, batch_actions, batch_targets, batch_values, batch_active, batch_assessment, batch_t in loader:
+            for (
+                images, batch_actions, batch_targets, batch_values,
+                batch_active, batch_assessment, batch_robot, batch_t,
+            ) in loader:
                 mask_logits, role_slots, _, _ = model(
                     images.to(device), batch_actions.to(device)
                 )
@@ -117,6 +124,7 @@ def main():
                 values.append(batch_values)
                 active.append(batch_active)
                 assessment.append(batch_assessment)
+                robot_features.append(batch_robot)
                 timesteps.append(batch_t)
             tensors = {
                 "role_slots": torch.cat(slots).contiguous(),
@@ -128,6 +136,7 @@ def main():
                 "acquisition_assessment_active": torch.cat(
                     assessment
                 ).bool().contiguous(),
+                "robot_features": torch.cat(robot_features).contiguous(),
                 "timesteps": torch.cat(timesteps).long().contiguous(),
             }
             if not torch.equal(
