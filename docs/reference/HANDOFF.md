@@ -3382,22 +3382,24 @@ success = true
 下一步应把第二停滞状态纳入Mamba2输入与候选训练，统一自动触发、候选评分和状态机，
 然后冻结方案评测未查看episode。
 
-### 20.32 自然空夹的Mamba2自动触发恢复
+### 20.32 自动触发恢复审计与可见重抓
 
-针对“模型意识到没有夹上再重新夹”的证据，选择task6 episode6的自然空夹，而非人工
-注入失败。该episode未参与Execution Mamba2训练集，属于训练时的验证episode。真实
-`failed_acquisition`标签从第211步开始；因果Mamba2采用阈值0.08、连续3帧确认，在
-第213步自动触发，延迟2帧，触发分数0.162。相邻episode7为边缘夹持但最终成功，使用
-相同assessment gate和确认规则不触发。
+最初选择task6 episode6。数值上布丁在闭爪后的15步内几乎不随EEF运动，因此标签判为
+`failed_acquisition`，Mamba2在第213步自动触发并最终恢复成功。但人工复核视频发现
+夹爪已经包在布丁两侧，肉眼看起来是夹住的；因此v15不能作为“可见空夹后重抓”的主要
+证据，必须保留为标签语义过宽的反例。
 
-触发后，短候选评分器在12个动作中选择`reclose_lift`，执行28步重新闭爪和抬升验证，
-随后冻结OpenVLA续跑37步达到最终LIBERO success。正常标注视频：
+改用episode3的明显停滞。因果Mamba2在第326步自动触发，`failed_acq=0.792`。旧评分器
+因只见过第309步对齐状态而误选原地闭爪并失败，说明检测时刻和候选训练状态必须对齐。
+从自动检测的第326步重采独立候选后，唯一真实抓取正例为
+`wide_diag_minus_minus`：大范围左后重定位后抓起约0.029米。新评分器在第326步正确
+选择该候选，执行28步后OpenVLA续跑35步达到最终success：
 
 ```text
-/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v15-auto-empty-grasp-labeled/task6-episode6.mp4
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v17-auto-visible-regrasp/task6-episode3.mp4
 ```
 
-视频顶部同时显示`failed_acq`分数和`gate=WAIT/ASSESS`：只有进入抓取结果评估窗口且
-分数连续3帧越阈值才触发，避免“机械臂只要靠近物体就重抓”。该演示仍使用预计算的
-因果role-slot序列，而不是现场逐帧视觉编码；下一步需把相同逻辑接到在线Slot提取器，
-并批量验证episode7等成功边缘抓取不被破坏。
+视频顶部显示`failed_acq`分数和`gate=WAIT/ASSESS`。需要如实说明：episode3参与过
+Execution Mamba训练，新的第326步候选也参与了候选评分器开发，因此这是功能演示而非
+留出集泛化结果；且当前外部相机受机械臂遮挡，虽能看到大范围重定位和布丁随后出现于
+夹爪下方，但后续应增加侧视角来提供更清楚的失败—重抓证据。
