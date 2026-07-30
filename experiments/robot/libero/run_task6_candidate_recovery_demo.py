@@ -42,6 +42,9 @@ from scripts.train_task6_execution_slots import HEADS  # noqa: E402
 from scripts.train_task6_macro_candidate_scorer import (  # noqa: E402
     MacroCandidateScorer,
 )
+from scripts.train_task6_slot_relative_geometry import (  # noqa: E402
+    SlotRelativeGeometry,
+)
 
 TASK_SUITE = "libero_10"
 TASK_ID = 6
@@ -57,6 +60,7 @@ def arguments():
     parser.add_argument("--source-rollout", type=Path, required=True)
     parser.add_argument("--sequence-dir", type=Path, required=True)
     parser.add_argument("--execution-checkpoint", type=Path, required=True)
+    parser.add_argument("--execution-robot-features", action="store_true")
     parser.add_argument("--candidate-checkpoint", type=Path)
     parser.add_argument(
         "--candidate-macro-kind",
@@ -76,6 +80,14 @@ def arguments():
         "--auto-trigger", action="store_true",
         help="Derive failure timestep causally from Execution Mamba2.",
     )
+    parser.add_argument(
+        "--auto-geometry-trigger",
+        action="store_true",
+        help="Trigger from causal drift of observable slot-relative xyz.",
+    )
+    parser.add_argument("--geometry-checkpoint", type=Path)
+    parser.add_argument("--geometry-drift-threshold", type=float, default=.04)
+    parser.add_argument("--geometry-lookback", type=int, default=15)
     parser.add_argument("--trigger-confirm-frames", type=int, default=3)
     parser.add_argument("--wait-steps", type=int, default=20)
     parser.add_argument("--max-resume-steps", type=int, default=220)
@@ -124,12 +136,18 @@ def causal_failure_scores(args, device):
         raise ValueError(
             "auto trigger requires acquisition_assessment_active in sequence"
         )
-    execution = ExecutionMamba().to(device).eval()
+    execution = ExecutionMamba(
+        robot_feature_dim=4 if args.execution_robot_features else 0
+    ).to(device).eval()
     execution.load_state_dict(load_file(args.execution_checkpoint))
     logits, _ = execution(
         sequence["role_slots"][None].to(device),
         sequence["role_geometry"][None].to(device),
         sequence["actions"][None].to(device),
+        (
+            sequence["robot_features"][None].to(device)
+            if args.execution_robot_features else None
+        ),
     )
     column = HEADS.index("failed_acquisition")
     scores = logits[0, :, column].sigmoid().cpu()
@@ -158,6 +176,46 @@ def causal_failure_scores(args, device):
     return trigger, scores.numpy(), active.numpy()
 
 
+@torch.inference_mode()
+def causal_geometry_trigger(args, device):
+    if args.geometry_checkpoint is None:
+        raise ValueError(
+            "--geometry-checkpoint is required with --auto-geometry-trigger"
+        )
+    sequence = load_file(
+        args.sequence_dir
+        / f"task6-episode{args.episode_id}-execution-roles.safetensors"
+    )
+    model = SlotRelativeGeometry().to(device).eval()
+    model.load_state_dict(load_file(args.geometry_checkpoint))
+    relative = model(
+        sequence["role_slots"].to(device),
+        sequence["role_geometry"].to(device),
+        sequence["robot_features"].to(device),
+    ).cpu()
+    lookback = args.geometry_lookback
+    drift = torch.zeros(len(relative))
+    drift[lookback:] = torch.linalg.vector_norm(
+        relative[lookback:] - relative[:-lookback], dim=-1
+    )
+    active = sequence["stage2_active"].bool()
+    aperture = sequence["robot_features"][:, 3]
+    confirm = args.trigger_confirm_frames
+    trigger = next((
+        timestep
+        for timestep in range(lookback + confirm - 1, len(relative))
+        if active[timestep - confirm + 1:timestep + 1].all()
+        and (aperture[timestep - confirm + 1:timestep + 1] < .025).all()
+        and (
+            drift[timestep - confirm + 1:timestep + 1]
+            >= args.geometry_drift_threshold
+        ).all()
+    ), None)
+    if trigger is None:
+        raise RuntimeError("slot-relative geometry did not confirm drift")
+    return trigger, relative.numpy(), drift.numpy(), active.numpy()
+
+
 def annotate(image, text, color):
     canvas = Image.fromarray(image)
     draw = ImageDraw.Draw(canvas)
@@ -167,27 +225,33 @@ def annotate(image, text, color):
 
 
 @torch.inference_mode()
-def select_candidate(args, device):
+def select_candidate(args, device, relative_prediction=None):
     if args.candidate_macro_kind == "relative-regrasp":
-        rows = {
-            int(row["timestep"]): row
-            for row in (
-                json.loads(line)
-                for line in (
-                    args.source_rollout / "steps.jsonl"
-                ).read_text().splitlines()
-                if line.strip()
+        if relative_prediction is not None:
+            relative = relative_prediction[args.failure_timestep]
+        else:
+            rows = {
+                int(row["timestep"]): row
+                for row in (
+                    json.loads(line)
+                    for line in (
+                        args.source_rollout / "steps.jsonl"
+                    ).read_text().splitlines()
+                    if line.strip()
+                )
+            }
+            row = rows[args.failure_timestep]
+            target = np.asarray(
+                row["privileged_object_state_before"][
+                    "chocolate_pudding_1_pos"
+                ],
+                dtype=np.float32,
             )
-        }
-        row = rows[args.failure_timestep]
-        target = np.asarray(
-            row["privileged_object_state_before"]["chocolate_pudding_1_pos"],
-            dtype=np.float32,
-        )
-        eef = np.asarray(
-            row["robot_state_before"]["robot0_eef_pos"], dtype=np.float32
-        )
-        macros = relative_regrasp_macros(target - eef)
+            eef = np.asarray(
+                row["robot_state_before"]["robot0_eef_pos"], dtype=np.float32
+            )
+            relative = target - eef
+        macros = relative_regrasp_macros(relative)
     else:
         macro_sets = {
             "short": candidate_macros,
@@ -210,12 +274,20 @@ def select_candidate(args, device):
         args.sequence_dir
         / f"task6-episode{args.episode_id}-execution-roles.safetensors"
     )
-    execution = ExecutionMamba().to(device).eval()
+    execution = ExecutionMamba(
+        robot_feature_dim=4 if args.execution_robot_features else 0
+    ).to(device).eval()
     execution.load_state_dict(load_file(args.execution_checkpoint))
     _, _, hidden = execution(
         sequence["role_slots"][None, :args.failure_timestep + 1].to(device),
         sequence["role_geometry"][None, :args.failure_timestep + 1].to(device),
         sequence["actions"][None, :args.failure_timestep + 1].to(device),
+        (
+            sequence["robot_features"][
+                None, :args.failure_timestep + 1
+            ].to(device)
+            if args.execution_robot_features else None
+        ),
         return_hidden=True,
     )
     chunks = torch.tensor(
@@ -240,14 +312,25 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     detector_scores = None
     detector_active = None
+    geometry_relative = None
+    geometry_drift = None
+    if args.auto_trigger and args.auto_geometry_trigger:
+        raise ValueError("choose only one automatic trigger")
     if args.auto_trigger:
         (
             args.failure_timestep,
             detector_scores,
             detector_active,
         ) = causal_failure_scores(args, device)
+    elif args.auto_geometry_trigger:
+        (
+            args.failure_timestep,
+            geometry_relative,
+            geometry_drift,
+            detector_active,
+        ) = causal_geometry_trigger(args, device)
     selected_name, selected_chunk, predicted_values = select_candidate(
-        args, device
+        args, device, geometry_relative
     )
     torch.cuda.empty_cache()
     model, processor, input_device = load_openvla(
@@ -296,7 +379,13 @@ def main():
                     f"failed_acq={detector_scores[timestep]:.3f}  "
                     f"gate={'ASSESS' if detector_active[timestep] else 'WAIT'}"
                     if detector_scores is not None
-                    else f"REPLAY ORIGINAL  step={timestep}"
+                    else (
+                        f"NORMAL  step={timestep}  "
+                        f"slot_drift={geometry_drift[timestep]:.3f}  "
+                        f"gate={'ASSESS' if detector_active[timestep] else 'WAIT'}"
+                        if geometry_drift is not None
+                        else f"REPLAY ORIGINAL  step={timestep}"
+                    )
                 ),
                 (170, 170, 170),
             ))
@@ -430,10 +519,13 @@ def main():
         "episode_id": args.episode_id,
         "failure_timestep": args.failure_timestep,
         "trigger_source": (
-            "execution_mamba2_causal" if args.auto_trigger else "fixed"
+            "execution_mamba2_causal" if args.auto_trigger
+            else "observable_slot_geometry_causal"
+            if args.auto_geometry_trigger else "fixed"
         ),
         "trigger_confirm_frames": (
-            args.trigger_confirm_frames if args.auto_trigger else None
+            args.trigger_confirm_frames
+            if args.auto_trigger or args.auto_geometry_trigger else None
         ),
         "trigger_score": (
             float(detector_scores[args.failure_timestep])
@@ -445,9 +537,15 @@ def main():
             if args.forced_candidate is not None else "learned_scorer"
         ),
         "candidate_geometry_source": (
-            "development_privileged_replay"
+            "observable_slot_geometry_model"
+            if geometry_relative is not None
+            else "development_privileged_replay"
             if args.candidate_macro_kind == "relative-regrasp"
             else "fixed_macro_library"
+        ),
+        "geometry_drift_at_trigger": (
+            float(geometry_drift[args.failure_timestep])
+            if geometry_drift is not None else None
         ),
         "candidate_macro_kind": args.candidate_macro_kind,
         "continuous_recovery": args.continuous_recovery,

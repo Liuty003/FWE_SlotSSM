@@ -185,11 +185,29 @@ def label_episode(rows, horizon):
                 and float(current_pudding[2] - attempt_pudding[2]) < 0.01
                 and acquisition_relative_drift > 0.02
             )
+        causal_slip_drift = 0.0
+        slip_lookback = 15
+        if index >= slip_lookback:
+            past = rows[index - slip_lookback]
+            past_pudding = np.asarray(
+                past["privileged_object_state_before"][PUDDING],
+                np.float32,
+            )
+            past_eef = np.asarray(
+                past["robot_state_before"]["robot0_eef_pos"], np.float32
+            )
+            causal_slip_drift = float(np.linalg.norm(
+                relative - (past_pudding - past_eef)
+            ))
         slip_risk = (
             stage2[index]
             and gripper_closed
             and near_pudding
-            and relative_drift > 0.025
+            # Causal evidence: the object is no longer maintaining its
+            # gripper-relative pose over the preceding observation window.
+            # This detects episode3 before the arm pushes toward the mug,
+            # whereas the old future-horizon threshold produced zero labels.
+            and causal_slip_drift > 0.015
             and not reaches_goal
         )
         mug_on_plate_future = bool(
@@ -221,6 +239,8 @@ def label_episode(rows, horizon):
             "pudding_goal_progress_m": progress,
             "pudding_displacement_m": pudding_displacement,
             "pudding_eef_relative_drift_m": relative_drift,
+            "causal_slip_drift_m": causal_slip_drift,
+            "pudding_relative_to_eef_xyz_m": relative.tolist(),
             "mug_displacement_m": mug_displacement,
             "mug_stage_displacement_m": mug_stage_displacement,
             "gripper_closed": bool(gripper_closed),

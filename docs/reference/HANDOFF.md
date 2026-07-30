@@ -3480,3 +3480,41 @@ xy/z倍率产生6个等长50步动作块。在episode3第210步（杯子尚稳�
 立即下一步：用可观测EEF—slot相对运动训练滑落头，使触发落在200–210窗口；再用视觉
 mask+depth/多帧slot估计替换privileged xyz，并让candidate scorer在6个相对候选中
 自主选择。
+
+### 20.34 v23自动视觉几何与学习式候选闭环
+
+旧slip head因监督阈值过严没有正例。新增完全因果的15帧EEF—目标相对漂移标签后，
+Mamba可召回滑落，但与正常搬运瞬态混淆，不能安全地只调分类阈值。因此实现
+`SlotRelativeGeometry`：输入三角色视觉slot、mask几何和EEF/夹爪本体状态，回归
+`pudding_xyz - eef_xyz`。episode3/7严格留出；验证平均误差0.0228米，episode7测试
+0.0229米。episode3第210步误差0.0191米，15帧漂移方向和幅度足以自动检测。
+
+为吸收单目预测的轴向误差，相对候选由6个扩为12个，增加x/y独立尺度不确定性。在
+第210步使用纯视觉预测几何，2个候选稳定重抓，杯子位移近零；在自动对齐的第205步，
+12个候选均为有效抓取正例。
+
+评分器接口已支持带robot features的Execution Mamba和同episode不同状态的显式
+train/validation划分。它在第210步训练组命中最优，在第205步验证组选中物理成功候选
+`relative_xy120_z085`，teacher regret约0.0262。
+
+最终v23不使用固定触发、privileged坐标或强制候选：
+
+```text
+trigger = observable slot geometry causal drift, step 205
+geometry drift = 0.0588 m, 15-frame lookback, 5-frame confirmation
+candidate geometry = observable SlotRelativeGeometry
+candidate selection = learned scorer
+selected = relative_xy120_z085
+OpenVLA resume = 13 steps
+success = true
+```
+
+视频：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v23-unified-auto-visual-scored/task6-episode3.mp4
+```
+
+当前主要限制：候选评分训练/验证均为episode3开发状态，尚非跨episode泛化证据；视觉
+漂移规则在episode4会潜在误触发，下一步必须先做全部nominal episode只读shadow审计，
+再决定加入任务进度/接触稳定性门控或重训，不应直接宣布安全普适。

@@ -48,6 +48,16 @@ def arguments():
         "--target-role", choices=("pudding", "mug"), default="pudding"
     )
     parser.add_argument(
+        "--relative-target-xyz",
+        type=float,
+        nargs=3,
+        metavar=("DX", "DY", "DZ"),
+        help=(
+            "Optional observable model prediction of target xyz relative to "
+            "EEF. Used only by relative-regrasp candidate generation."
+        ),
+    )
+    parser.add_argument(
         "--macro-kind",
         choices=(
             "short", "relative-regrasp", "safe-approach",
@@ -169,6 +179,32 @@ def relative_regrasp_macros(relative_target_xyz):
                 -.7, -.12,
             )
             name = f"relative_xy{int(xy_scale * 100):03d}_z{int(z_scale * 100):03d}"
+            candidates[name] = np.stack(
+                [action(z=up_action)] * up_steps
+                + [action(x=horizontal[0], y=horizontal[1])] * move_steps
+                + [action(z=descend)] * down_steps
+                + [action(gripper=1.)] * 12
+                + [action(z=.25, gripper=1.)] * 10
+            )
+    # A monocular slot decoder can have axis-specific bias. Add a compact
+    # uncertainty set that varies lateral correction independently while
+    # retaining the shallower descent that is robust to depth overestimation.
+    for x_scale in (.8, 1.):
+        for y_scale in (.4, .6, .8):
+            horizontal = np.clip(
+                relative[:2] * np.asarray([x_scale, y_scale], np.float32)
+                / (gain_m_per_unit_step * move_steps),
+                -.9, .9,
+            )
+            descend = np.clip(
+                (relative[2] - raised_m) * .85
+                / (gain_m_per_unit_step * down_steps),
+                -.7, -.12,
+            )
+            name = (
+                f"relative_x{int(x_scale * 100):03d}"
+                f"_y{int(y_scale * 100):03d}_z085"
+            )
             candidates[name] = np.stack(
                 [action(z=up_action)] * up_steps
                 + [action(x=horizontal[0], y=horizontal[1])] * move_steps
@@ -319,7 +355,11 @@ def main():
             "cup-place": cup_place_macros,
         }.get(args.macro_kind)
         macros = (
-            relative_regrasp_macros(before[target_key] - before_eef)
+            relative_regrasp_macros(
+                args.relative_target_xyz
+                if args.relative_target_xyz is not None
+                else before[target_key] - before_eef
+            )
             if args.macro_kind == "relative-regrasp"
             else macro_factory()
         )
@@ -481,6 +521,16 @@ def main():
                     "target_position": before[target_key].tolist(),
                     "target_relative_to_eef_m":
                         (before[target_key] - before_eef).tolist(),
+                    "candidate_geometry_input_m": (
+                        list(args.relative_target_xyz)
+                        if args.relative_target_xyz is not None
+                        else (before[target_key] - before_eef).tolist()
+                    ),
+                    "candidate_geometry_source": (
+                        "external_observable_prediction"
+                        if args.relative_target_xyz is not None
+                        else "privileged_branch_state"
+                    ),
                 },
                 "candidates": outcomes,
             }, indent=2),

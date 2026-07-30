@@ -24,11 +24,18 @@ def arguments():
     parser.add_argument("--sequence-dir", type=Path, required=True)
     parser.add_argument("--execution-checkpoint", type=Path, required=True)
     parser.add_argument("--candidate-json", type=Path, nargs="+", required=True)
+    parser.add_argument(
+        "--validation-json",
+        type=Path,
+        nargs="+",
+        help="Explicit held-out candidate groups, including same-episode states.",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--validation-episode", type=int, default=6)
     parser.add_argument("--epochs", type=int, default=2000)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--seed", type=int, default=20260730)
+    parser.add_argument("--robot-features", action="store_true")
     return parser.parse_args()
 
 
@@ -71,7 +78,9 @@ def pairwise_ranking_loss(prediction, target, margin=.05):
 
 
 @torch.inference_mode()
-def context_at(execution, sequence_dir, episode, timestep, device):
+def context_at(
+    execution, sequence_dir, episode, timestep, device, robot_features=False
+):
     tensors = load_file(
         sequence_dir / f"task6-episode{episode}-execution-roles.safetensors"
     )
@@ -79,12 +88,18 @@ def context_at(execution, sequence_dir, episode, timestep, device):
         tensors["role_slots"][None, :timestep + 1].to(device),
         tensors["role_geometry"][None, :timestep + 1].to(device),
         tensors["actions"][None, :timestep + 1].to(device),
+        (
+            tensors["robot_features"][None, :timestep + 1].to(device)
+            if robot_features else None
+        ),
         return_hidden=True,
     )
     return hidden[0, -1].cpu()
 
 
-def load_groups(paths, execution, sequence_dir, device):
+def load_groups(
+    paths, execution, sequence_dir, device, robot_features=False
+):
     groups = []
     for path in paths:
         row = json.loads(path.read_text())
@@ -104,7 +119,9 @@ def load_groups(paths, execution, sequence_dir, device):
             "context": context_at(
                 execution, sequence_dir, int(row["episode_id"]),
                 int(row["failure_timestep"]), device,
+                robot_features,
             ),
+            "source": str(path),
         })
     return groups
 
@@ -139,19 +156,29 @@ def main():
     args = arguments()
     torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    execution = ExecutionMamba().to(device).eval()
+    execution = ExecutionMamba(
+        robot_feature_dim=4 if args.robot_features else 0
+    ).to(device).eval()
     execution.load_state_dict(load_file(args.execution_checkpoint))
     groups = load_groups(
-        args.candidate_json, execution, args.sequence_dir, device
+        args.candidate_json, execution, args.sequence_dir, device,
+        args.robot_features,
     )
-    train = [
-        group for group in groups
-        if group["episode_id"] != args.validation_episode
-    ]
-    validation = [
-        group for group in groups
-        if group["episode_id"] == args.validation_episode
-    ]
+    if args.validation_json:
+        train = groups
+        validation = load_groups(
+            args.validation_json, execution, args.sequence_dir, device,
+            args.robot_features,
+        )
+    else:
+        train = [
+            group for group in groups
+            if group["episode_id"] != args.validation_episode
+        ]
+        validation = [
+            group for group in groups
+            if group["episode_id"] == args.validation_episode
+        ]
     if not train or not validation:
         raise ValueError("both training and validation groups are required")
     model = MacroCandidateScorer(
@@ -216,6 +243,11 @@ def main():
         "sequence_dir": str(args.sequence_dir),
         "execution_checkpoint": str(args.execution_checkpoint),
         "candidate_json": [str(path) for path in args.candidate_json],
+        "validation_json": (
+            [str(path) for path in args.validation_json]
+            if args.validation_json else None
+        ),
+        "robot_features": args.robot_features,
         "limitation": "development smoke with five matched states",
     }, indent=2), encoding="utf-8")
 
