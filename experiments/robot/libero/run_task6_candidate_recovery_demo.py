@@ -36,6 +36,7 @@ from scripts.train_task6_macro_candidate_scorer import (  # noqa: E402
 
 TASK_SUITE = "libero_10"
 TASK_ID = 6
+MUG_SUBGOAL = "put the white mug on the plate"
 
 
 def arguments():
@@ -52,6 +53,12 @@ def arguments():
     parser.add_argument("--failure-timestep", type=int, default=211)
     parser.add_argument("--wait-steps", type=int, default=20)
     parser.add_argument("--max-resume-steps", type=int, default=220)
+    parser.add_argument(
+        "--resume-mode",
+        choices=("pudding", "mug-then-pudding", "full-then-pudding"),
+        default="pudding",
+    )
+    parser.add_argument("--stage-confirm-steps", type=int, default=5)
     parser.add_argument("--device-map", default="balanced_low_0")
     parser.add_argument("--gpu-memory-gib", type=int, default=20)
     parser.add_argument(
@@ -135,6 +142,9 @@ def main():
     }
     frames = []
     success = False
+    stage_streak = 0
+    stage_switched = args.resume_mode == "pudding"
+    stage_switch_step = None
     try:
         for _ in range(args.wait_steps):
             obs, _, _, _ = env.step(action().tolist())
@@ -157,14 +167,29 @@ def main():
             ))
             obs, _, _, _ = env.step(candidate_action.tolist())
         for index in range(args.max_resume_steps):
+            mug_on_plate = bool(env.env._eval_predicate(
+                ["on", "porcelain_mug_1", "plate_1"]
+            ))
+            if not stage_switched:
+                stage_streak = stage_streak + 1 if mug_on_plate else 0
+                if stage_streak >= args.stage_confirm_steps:
+                    stage_switched = True
+                    stage_switch_step = index
+            instruction = PUDDING_SUBGOAL if stage_switched else (
+                task.language
+                if args.resume_mode == "full-then-pudding"
+                else MUG_SUBGOAL
+            )
             image = np.ascontiguousarray(
                 obs["agentview_image"][::-1, ::-1]
             )
             frames.append(annotate(
-                image, f"OPENVLA RESUME  step={index}", (40, 210, 100)
+                image,
+                f"OPENVLA {'PUDDING' if stage_switched else 'MUG'}  step={index}",
+                (40, 210, 100),
             ))
             policy_action = predict_action(
-                model, processor, image, PUDDING_SUBGOAL, TASK_SUITE,
+                model, processor, image, instruction, TASK_SUITE,
                 args.center_crop, input_device,
             )
             obs, _, _, _ = env.step(policy_action.tolist())
@@ -187,6 +212,8 @@ def main():
         "recovery_steps": len(selected_chunk),
         "resume_steps": len(frames) - args.failure_timestep - len(selected_chunk)
                         - (10 if success else 0),
+        "resume_mode": args.resume_mode,
+        "stage_switch_step": stage_switch_step,
         "video": str(args.output),
     }
     args.output.with_suffix(".json").write_text(

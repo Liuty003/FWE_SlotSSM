@@ -3266,3 +3266,38 @@ episode3在step309时EEF与布丁相距0.104米，原8个局部候选全部无�
 同一批10条的7/10提高到至少8/10；但episode3候选参与了开发训练，不能作为独立泛化
 数字。下一步针对episode2和9的第一阶段杯子失败建立相同的杯子候选恢复，再冻结开发
 方案并运行未查看episode10–19。
+
+### 20.29 第一阶段杯子失败：短期抓取价值不足
+
+原开发失败episode2/9都未进入布丁阶段。轨迹审计：
+
+- episode2首次抓杯后杯子最大仅移动0.0065米，EEF随后远离；失败时杯子距杯垫约
+  0.345米；
+- episode9曾将杯子移动约0.347米，但最终放在杯垫旁，杯—盘谓词从未成立。
+
+候选收集器现支持`--target-role mug`。从7条成功episode的杯子抓取状态采集12候选作为
+训练，episode2完全留出。杯子候选排序器在episode2正确选择
+`regrasp_diag_plus_minus`，该候选建立接触并抬高杯子0.029米，teacher regret为0。
+
+但两次在线续跑都失败：
+
+1. 使用孤立“把白杯放到杯垫”提示，360步未建立杯—盘关系；
+2. 改回OpenVLA训练分布内的完整原指令，仍在360步内失败。
+
+视频：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v3/task6-episode2.mp4
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v4/task6-episode2.mp4
+```
+
+视频显示恢复宏只完成短时抓起，OpenVLA随后释放杯子，杯子仍远离杯垫并进入重复运动。
+这证明当前短期教师价值存在目标错配：`attached/lifted`高不等于长程子目标成功。下一步
+必须把杯子候选扩为完整宏动作：
+
+```text
+重抓 → 长距离搬运 → 对准杯垫 → 下降 → 释放 → 验证On(mug, plate)
+```
+
+候选教师价值应以最终杯—盘关系为主，接触/抬高只作中间效果；若所有完整候选均失败，
+才扩大搜索。完成episode2后，再用相同放置候选处理episode9。

@@ -31,7 +31,7 @@ from scripts.build_task6_execution_labels import (  # noqa: E402
 
 TASK_SUITE = "libero_10"
 TASK_ID = 6
-TARGET_NAME = "chocolate_pudding_1"
+PLATE = "plate_1_pos"
 
 
 def arguments():
@@ -39,6 +39,9 @@ def arguments():
     parser.add_argument("--source-rollout", type=Path, required=True)
     parser.add_argument("--episode-id", type=int, default=6)
     parser.add_argument("--failure-timestep", type=int, default=211)
+    parser.add_argument(
+        "--target-role", choices=("pudding", "mug"), default="pudding"
+    )
     parser.add_argument("--wait-steps", type=int, default=20)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--fps", type=int, default=20)
@@ -99,6 +102,7 @@ def object_positions(obs):
     return {
         PUDDING: np.asarray(obs[PUDDING], np.float32),
         MUG: np.asarray(obs[MUG], np.float32),
+        PLATE: np.asarray(obs[PLATE], np.float32),
     }
 
 
@@ -136,6 +140,12 @@ def main():
 
     source_env = make_env()
     fork_env = make_env()
+    target_key = PUDDING if args.target_role == "pudding" else MUG
+    target_name = (
+        "chocolate_pudding_1"
+        if args.target_role == "pudding" else "porcelain_mug_1"
+    )
+    collateral_key = MUG if args.target_role == "pudding" else PUDDING
     noop = action()
     try:
         obs = None
@@ -147,9 +157,13 @@ def main():
         sim_state = source_env.get_sim_state()
         before = object_positions(obs)
         before_eef = np.asarray(obs["robot0_eef_pos"], np.float32)
-        before_distance = distance_to_region(before[PUDDING])
+        before_distance = (
+            distance_to_region(before[PUDDING])
+            if args.target_role == "pudding"
+            else float(np.linalg.norm(before[MUG][:2] - before[PLATE][:2]))
+        )
         _, attached_before = extract_target_gripper_contact(
-            source_env.env.sim, target_name=TARGET_NAME
+            source_env.env.sim, target_name=target_name
         )
         args.output_dir.mkdir(parents=True, exist_ok=True)
         outcomes = []
@@ -181,31 +195,38 @@ def main():
                 branch_obs["robot0_eef_pos"], np.float32
             )
             _, attached_after = extract_target_gripper_contact(
-                fork_env.env.sim, target_name=TARGET_NAME
+                fork_env.env.sim, target_name=target_name
             )
             mug_on_plate = bool(fork_env.env._eval_predicate(
                 ["on", "porcelain_mug_1", "plate_1"]
             ))
-            pudding_displacement = float(
-                np.linalg.norm(after[PUDDING] - before[PUDDING])
+            target_displacement = float(
+                np.linalg.norm(after[target_key] - before[target_key])
             )
-            mug_displacement = float(
-                np.linalg.norm(after[MUG] - before[MUG])
+            collateral_displacement = float(
+                np.linalg.norm(
+                    after[collateral_key] - before[collateral_key]
+                )
             )
-            goal_progress = (
-                before_distance - distance_to_region(after[PUDDING])
+            after_distance = (
+                distance_to_region(after[PUDDING])
+                if args.target_role == "pudding"
+                else float(np.linalg.norm(after[MUG][:2] - after[PLATE][:2]))
             )
-            target_lift = float(after[PUDDING][2] - before[PUDDING][2])
+            goal_progress = before_distance - after_distance
+            target_lift = float(
+                after[target_key][2] - before[target_key][2]
+            )
             eef_target_distance = float(
-                np.linalg.norm(after_eef - after[PUDDING])
+                np.linalg.norm(after_eef - after[target_key])
             )
             teacher_value = float(
                 8 * goal_progress
                 + 1.5 * float(attached_after)
                 + 10 * max(target_lift, 0)
-                + 2 * min(pudding_displacement, .05)
-                - 12 * mug_displacement
-                - float(not mug_on_plate)
+                + 2 * min(target_displacement, .05)
+                - 12 * collateral_displacement
+                - float(args.target_role == "pudding" and not mug_on_plate)
             )
             video = args.output_dir / f"{name}.mp4"
             imageio.mimsave(video, frames, fps=args.fps)
@@ -216,10 +237,16 @@ def main():
                 "restore_error_m": restore_error,
                 "attached_before": bool(attached_before),
                 "attached_after": bool(attached_after),
-                "pudding_displacement_m": pudding_displacement,
+                "target_role": args.target_role,
+                "target_displacement_m": target_displacement,
+                "target_lift_m": target_lift,
+                "target_goal_progress_m": goal_progress,
+                "collateral_displacement_m": collateral_displacement,
+                # Backward-compatible task-6 pudding fields.
+                "pudding_displacement_m": target_displacement,
                 "pudding_lift_m": target_lift,
                 "pudding_goal_progress_m": goal_progress,
-                "mug_displacement_m": mug_displacement,
+                "mug_displacement_m": collateral_displacement,
                 "mug_on_plate_after": mug_on_plate,
                 "eef_target_distance_after_m": eef_target_distance,
                 "task_success_after": bool(fork_env.check_success()),
@@ -236,11 +263,12 @@ def main():
                 "task_id": TASK_ID,
                 "episode_id": args.episode_id,
                 "failure_timestep": args.failure_timestep,
+                "target_role": args.target_role,
                 "source_rollout": str(args.source_rollout),
                 "model_input_excludes_privileged_outcomes": True,
                 "same_sim_state_for_all_candidates": True,
                 "before": {
-                    "pudding_goal_distance_m": before_distance,
+                    "target_goal_distance_m": before_distance,
                     "attached": bool(attached_before),
                     "eef_position": before_eef.tolist(),
                 },
