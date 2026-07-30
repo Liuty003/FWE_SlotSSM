@@ -3429,3 +3429,54 @@ failed acquisition near object → local regrasp / lift verification
 
 下一步增加第一类安全撤离和绕杯重规划候选；不能为了早触发而把局部重抓宏硬套到远距
 风险状态。
+
+### 20.33 安全接近、连续在线恢复与泛化边界
+
+第237步新增12个“先抬升、横移、下降、闭爪、抬升验证”的安全接近候选。3个候选可
+稳定抓起布丁约0.030米，其中`safe_x085_ym10_s12_d16` teacher value最高。固定候选
+开发演示中，重抓后OpenVLA续跑8步达到LIBERO success：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v19-continuous-safe-dev/task6-episode3.mp4
+```
+
+但关键帧审计显示白杯在第220步已经倾斜、第230步明显倒下，因此第237步再成功重抓也
+不能作为高质量证据。提前到第228步仍继承不稳定杯状态。连续环境实验确认重建MuJoCo
+分支会扰动脆弱接触，但即使不重建，第237步也已经太晚。
+
+时序审计进一步定位：
+
+- 第190步布丁仍有夹爪接触，杯子稳定；
+- 第200步接触尚在但EEF—布丁关系开始漂移，属于滑落前兆；
+- 第210步EEF—布丁距离约0.048米，杯子仍稳定；
+- 第220步后才出现明显附带碰撞。
+
+第200步连续在线`reclose_lift`成功保持杯子稳定，但最终未完成任务；说明“提前停止
+危险推进”有效，单纯加强闭合不足。下一步在第200–210步窗口生成由slot相对几何决定
+的候选，而非继续手调固定方向。
+
+泛化边界也已明确：SlotSSM、Mamba风险状态、候选生成—评估—执行—交还VLA的闭环可
+跨任务复用；对象名、任务角色、固定宏幅度、标签和少量训练数据目前仍是task-specific。
+路线是先完成task6可信视频，再把对象改为语言条件的`操作目标/放置目标/障碍物`角色，
+把固定宏改为相对slot几何候选，最后用第二任务验证只需少量适配而无需重写系统。
+
+随后第一版相对几何候选已实现。候选只接收`target_xyz - eef_xyz`，用无量纲
+xy/z倍率产生6个等长50步动作块。在episode3第210步（杯子尚稳定、布丁接触关系已
+漂移）采集分支，`relative_xy100_z114`和`relative_xy080_z114`均稳定重抓并抬高约
+0.017米，杯子最大位移约`4.6e-7`米。
+
+连续在线开发演示使用最佳候选，重抓后OpenVLA续跑21步达到success，杯子全程直立，
+视频无EGL闪烁：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task6-candidate-recovery-online-v21-relative-regrasp-dev/task6-episode3.mp4
+```
+
+这是目前安全性和视觉效果最好的恢复，但仍有两项开发期输入，不能称为统一自动闭环：
+
+1. 触发时刻固定为第210步；
+2. 相对三维几何来自回放中的privileged object state。
+
+立即下一步：用可观测EEF—slot相对运动训练滑落头，使触发落在200–210窗口；再用视觉
+mask+depth/多帧slot估计替换privileged xyz，并让candidate scorer在6个相对候选中
+自主选择。

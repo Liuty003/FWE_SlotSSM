@@ -29,6 +29,8 @@ from scripts.collect_task6_failure_candidate_branches import (  # noqa: E402
     action,
     candidate_macros,
     cup_place_macros,
+    relative_regrasp_macros,
+    safe_approach_macros,
 )
 from scripts.train_task6_execution_mamba import ExecutionMamba  # noqa: E402
 from scripts.train_task6_execution_mamba import (  # noqa: E402
@@ -55,11 +57,18 @@ def arguments():
     parser.add_argument("--source-rollout", type=Path, required=True)
     parser.add_argument("--sequence-dir", type=Path, required=True)
     parser.add_argument("--execution-checkpoint", type=Path, required=True)
-    parser.add_argument("--candidate-checkpoint", type=Path, required=True)
+    parser.add_argument("--candidate-checkpoint", type=Path)
     parser.add_argument(
         "--candidate-macro-kind",
-        choices=("short", "cup-place"),
+        choices=("short", "cup-place", "relative-regrasp", "safe-approach"),
         default="short",
+    )
+    parser.add_argument(
+        "--forced-candidate",
+        help=(
+            "Development-only candidate override. This bypasses the learned "
+            "candidate scorer and is recorded in output metadata."
+        ),
     )
     parser.add_argument("--episode-id", type=int, default=6)
     parser.add_argument("--failure-timestep", type=int, default=211)
@@ -83,6 +92,15 @@ def arguments():
     )
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--continuous-recovery",
+        action="store_true",
+        help=(
+            "Execute recovery in the live environment without serializing and "
+            "reconstructing MuJoCo/controller state. This is the faithful "
+            "online path; state forks remain useful for branch comparisons."
+        ),
+    )
     parser.add_argument(
         "--save-final-sim-state",
         type=Path,
@@ -150,6 +168,44 @@ def annotate(image, text, color):
 
 @torch.inference_mode()
 def select_candidate(args, device):
+    if args.candidate_macro_kind == "relative-regrasp":
+        rows = {
+            int(row["timestep"]): row
+            for row in (
+                json.loads(line)
+                for line in (
+                    args.source_rollout / "steps.jsonl"
+                ).read_text().splitlines()
+                if line.strip()
+            )
+        }
+        row = rows[args.failure_timestep]
+        target = np.asarray(
+            row["privileged_object_state_before"]["chocolate_pudding_1_pos"],
+            dtype=np.float32,
+        )
+        eef = np.asarray(
+            row["robot_state_before"]["robot0_eef_pos"], dtype=np.float32
+        )
+        macros = relative_regrasp_macros(target - eef)
+    else:
+        macro_sets = {
+            "short": candidate_macros,
+            "cup-place": cup_place_macros,
+            "safe-approach": safe_approach_macros,
+        }
+        macros = macro_sets[args.candidate_macro_kind]()
+    if args.forced_candidate is not None:
+        if args.forced_candidate not in macros:
+            raise ValueError(
+                f"unknown {args.candidate_macro_kind} candidate "
+                f"{args.forced_candidate!r}; choices={tuple(macros)}"
+            )
+        return args.forced_candidate, macros[args.forced_candidate], None
+    if args.candidate_checkpoint is None:
+        raise ValueError(
+            "--candidate-checkpoint is required without --forced-candidate"
+        )
     sequence = load_file(
         args.sequence_dir
         / f"task6-episode{args.episode_id}-execution-roles.safetensors"
@@ -161,11 +217,6 @@ def select_candidate(args, device):
         sequence["role_geometry"][None, :args.failure_timestep + 1].to(device),
         sequence["actions"][None, :args.failure_timestep + 1].to(device),
         return_hidden=True,
-    )
-    macros = (
-        cup_place_macros()
-        if args.candidate_macro_kind == "cup-place"
-        else candidate_macros()
     )
     chunks = torch.tensor(
         np.stack(list(macros.values())), dtype=torch.float32, device=device
@@ -250,27 +301,28 @@ def main():
                 (170, 170, 170),
             ))
             obs, _, _, _ = env.step(rows[timestep]["executed_action"])
-        # Candidate teachers are evaluated in a fresh fork environment.  The
-        # controller keeps internal goal state outside MuJoCo's flattened
-        # state. Close the source EGL context before constructing the fork;
-        # keeping both alive can corrupt rendered frames.
-        sim_state = env.get_sim_state()
-        env.close()
-        fork_env = OffScreenRenderEnv(
-            bddl_file_name=str(bddl),
-            camera_heights=256,
-            camera_widths=256,
-        )
-        fork_env.seed(0)
-        fork_env.reset()
-        fork_env.set_init_state(initial_states[args.episode_id])
-        obs = fork_env.regenerate_obs_from_state(sim_state)
-        controller = fork_env.env.robots[0].controller
-        controller.update(force=True)
-        controller.reset_goal()
-        fork_env.env.timestep = 0
-        fork_env.env.done = False
-        env = fork_env
+        if not args.continuous_recovery:
+            # Branch comparison reconstructs a fresh environment from the
+            # flattened simulator state. Actual online recovery should use
+            # --continuous-recovery so unstable objects and controller state
+            # are not perturbed by this reconstruction.
+            sim_state = env.get_sim_state()
+            env.close()
+            fork_env = OffScreenRenderEnv(
+                bddl_file_name=str(bddl),
+                camera_heights=256,
+                camera_widths=256,
+            )
+            fork_env.seed(0)
+            fork_env.reset()
+            fork_env.set_init_state(initial_states[args.episode_id])
+            obs = fork_env.regenerate_obs_from_state(sim_state)
+            controller = fork_env.env.robots[0].controller
+            controller.update(force=True)
+            controller.reset_goal()
+            fork_env.env.timestep = 0
+            fork_env.env.done = False
+            env = fork_env
         for index, candidate_action in enumerate(selected_chunk):
             image = np.ascontiguousarray(
                 obs["agentview_image"][::-1, ::-1]
@@ -388,7 +440,17 @@ def main():
             if detector_scores is not None else None
         ),
         "selected_candidate": selected_name,
+        "candidate_selection_source": (
+            "forced_development_override"
+            if args.forced_candidate is not None else "learned_scorer"
+        ),
+        "candidate_geometry_source": (
+            "development_privileged_replay"
+            if args.candidate_macro_kind == "relative-regrasp"
+            else "fixed_macro_library"
+        ),
         "candidate_macro_kind": args.candidate_macro_kind,
+        "continuous_recovery": args.continuous_recovery,
         "predicted_values": predicted_values,
         "success": success,
         "original_replay_steps": args.failure_timestep,

@@ -49,7 +49,10 @@ def arguments():
     )
     parser.add_argument(
         "--macro-kind",
-        choices=("short", "cup-stable-grasp", "cup-place"),
+        choices=(
+            "short", "relative-regrasp", "safe-approach",
+            "cup-stable-grasp", "cup-place",
+        ),
         default="short",
     )
     parser.add_argument("--wait-steps", type=int, default=20)
@@ -105,6 +108,74 @@ def candidate_macros():
     values = [chunk.tobytes() for chunk in candidates.values()]
     if len(set(values)) != len(values):
         raise ValueError("candidate macros must be distinct")
+    return candidates
+
+
+def safe_approach_macros():
+    """Long-range, raised approaches for prospective collision recovery."""
+    parameters = {
+        "safe_x070_s12_d12": (-.70, 0., 12, 12),
+        "safe_x070_s12_d14": (-.70, 0., 12, 14),
+        "safe_x070_s12_d16": (-.70, 0., 12, 16),
+        "safe_x070_s14_d12": (-.70, 0., 14, 12),
+        "safe_x070_s14_d14": (-.70, 0., 14, 14),
+        "safe_x070_s14_d16": (-.70, 0., 14, 16),
+        "safe_x070_ym10_s12_d12": (-.70, -.10, 12, 12),
+        "safe_x070_ym10_s12_d14": (-.70, -.10, 12, 14),
+        "safe_x070_ym10_s12_d16": (-.70, -.10, 12, 16),
+        "safe_x085_ym10_s12_d12": (-.85, -.10, 12, 12),
+        "safe_x085_ym10_s12_d14": (-.85, -.10, 12, 14),
+        "safe_x085_ym10_s12_d16": (-.85, -.10, 12, 16),
+    }
+    candidates = {}
+    for name, (dx, dy, move_steps, descend_steps) in parameters.items():
+        candidates[name] = np.stack(
+            [action(z=.35)] * 8
+            + [action(x=dx, y=dy)] * move_steps
+            + [action()] * (16 - move_steps)
+            + [action(z=-.35)] * descend_steps
+            + [action()] * (16 - descend_steps)
+            + [action(gripper=1.)] * 12
+            + [action(z=.25, gripper=1.)] * 10
+        )
+    return candidates
+
+
+def relative_regrasp_macros(relative_target_xyz):
+    """Generate matched regrasp chunks from target position relative to EEF.
+
+    The conversion from normalized OSC action to Cartesian displacement is a
+    local empirical gain, not a scene direction. Candidate diversity is
+    expressed as dimensionless multipliers around the observed slot geometry.
+    """
+    relative = np.asarray(relative_target_xyz, dtype=np.float32)
+    if relative.shape != (3,) or not np.isfinite(relative).all():
+        raise ValueError("relative_target_xyz must be a finite xyz vector")
+    gain_m_per_unit_step = .0105
+    up_steps, move_steps, down_steps = 6, 10, 12
+    up_action = .30
+    raised_m = gain_m_per_unit_step * up_steps * up_action
+    candidates = {}
+    for xy_scale in (.8, 1., 1.2):
+        for z_scale in (.85, 1.15):
+            horizontal = np.clip(
+                relative[:2] * xy_scale
+                / (gain_m_per_unit_step * move_steps),
+                -.9, .9,
+            )
+            descend = np.clip(
+                (relative[2] - raised_m) * z_scale
+                / (gain_m_per_unit_step * down_steps),
+                -.7, -.12,
+            )
+            name = f"relative_xy{int(xy_scale * 100):03d}_z{int(z_scale * 100):03d}"
+            candidates[name] = np.stack(
+                [action(z=up_action)] * up_steps
+                + [action(x=horizontal[0], y=horizontal[1])] * move_steps
+                + [action(z=descend)] * down_steps
+                + [action(gripper=1.)] * 12
+                + [action(z=.25, gripper=1.)] * 10
+            )
     return candidates
 
 
@@ -241,11 +312,17 @@ def main():
         source_env = None
         args.output_dir.mkdir(parents=True, exist_ok=True)
         outcomes = []
-        macros = {
+        macro_factory = {
             "short": candidate_macros,
+            "safe-approach": safe_approach_macros,
             "cup-stable-grasp": stable_cup_grasp_macros,
             "cup-place": cup_place_macros,
-        }[args.macro_kind]()
+        }.get(args.macro_kind)
+        macros = (
+            relative_regrasp_macros(before[target_key] - before_eef)
+            if args.macro_kind == "relative-regrasp"
+            else macro_factory()
+        )
         if args.macro_kind.startswith("cup-") and args.target_role != "mug":
             raise ValueError("cup macros require --target-role mug")
         for name, chunk in macros.items():
@@ -268,6 +345,9 @@ def main():
                 frames = [np.ascontiguousarray(
                     branch_obs["agentview_image"][::-1, ::-1]
                 )]
+                max_collateral_displacement = 0.0
+                min_eef_target_distance = float("inf")
+                attached_ever = False
                 for candidate_action in chunk:
                     branch_obs, _, done, _ = branch_env.step(
                         candidate_action.tolist()
@@ -275,6 +355,27 @@ def main():
                     frames.append(np.ascontiguousarray(
                         branch_obs["agentview_image"][::-1, ::-1]
                     ))
+                    step_positions = object_positions(branch_obs)
+                    step_eef = np.asarray(
+                        branch_obs["robot0_eef_pos"], np.float32
+                    )
+                    min_eef_target_distance = min(
+                        min_eef_target_distance,
+                        float(np.linalg.norm(
+                            step_eef - step_positions[target_key]
+                        )),
+                    )
+                    _, step_attached = extract_target_gripper_contact(
+                        branch_env.env.sim, target_name=target_name
+                    )
+                    attached_ever = attached_ever or step_attached
+                    max_collateral_displacement = max(
+                        max_collateral_displacement,
+                        float(np.linalg.norm(
+                            step_positions[collateral_key]
+                            - before[collateral_key]
+                        )),
+                    )
                     if done:
                         break
                 after = object_positions(branch_obs)
@@ -316,6 +417,7 @@ def main():
                 + 10 * max(target_lift, 0)
                 + 2 * min(target_displacement, .05)
                 - 12 * collateral_displacement
+                - 20 * max_collateral_displacement
                 - float(args.target_role == "pudding" and not mug_on_plate)
                 + 5 * float(args.target_role == "mug" and mug_on_plate)
             )
@@ -328,12 +430,15 @@ def main():
                 "restore_error_m": restore_error,
                 "attached_before": bool(attached_before),
                 "attached_after": bool(attached_after),
+                "attached_ever": bool(attached_ever),
                 "target_role": args.target_role,
                 "macro_kind": args.macro_kind,
                 "target_displacement_m": target_displacement,
                 "target_lift_m": target_lift,
                 "target_goal_progress_m": goal_progress,
                 "collateral_displacement_m": collateral_displacement,
+                "max_collateral_displacement_m":
+                    max_collateral_displacement,
                 # Backward-compatible task-6 pudding fields.
                 "pudding_displacement_m": target_displacement,
                 "pudding_lift_m": target_lift,
@@ -341,6 +446,7 @@ def main():
                 "mug_displacement_m": collateral_displacement,
                 "mug_on_plate_after": mug_on_plate,
                 "eef_target_distance_after_m": eef_target_distance,
+                "min_eef_target_distance_m": min_eef_target_distance,
                 "task_success_after": task_success_after,
                 "teacher_value": teacher_value,
                 "video": str(video),
@@ -372,6 +478,9 @@ def main():
                     "target_goal_distance_m": before_distance,
                     "attached": bool(attached_before),
                     "eef_position": before_eef.tolist(),
+                    "target_position": before[target_key].tolist(),
+                    "target_relative_to_eef_m":
+                        (before[target_key] - before_eef).tolist(),
                 },
                 "candidates": outcomes,
             }, indent=2),

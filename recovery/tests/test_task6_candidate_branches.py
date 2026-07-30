@@ -3,6 +3,8 @@ import numpy as np
 from scripts.collect_task6_failure_candidate_branches import (
     candidate_macros,
     cup_place_macros,
+    relative_regrasp_macros,
+    safe_approach_macros,
     stable_cup_grasp_macros,
 )
 
@@ -35,3 +37,26 @@ def test_stable_cup_grasps_finish_with_slow_closed_lift():
     for chunk in candidates.values():
         assert np.allclose(chunk[-20:, 2], .15)
         assert np.all(chunk[-20:, 6] > 0)
+
+
+def test_safe_approaches_retract_then_finish_with_verified_lift():
+    candidates = safe_approach_macros()
+    assert {chunk.shape for chunk in candidates.values()} == {(62, 7)}
+    assert len({chunk.tobytes() for chunk in candidates.values()}) == len(candidates)
+    for chunk in candidates.values():
+        assert np.all(chunk[:8, 2] > 0)
+        assert np.all(chunk[-10:, 2] > 0)
+        assert np.all(chunk[-10:, 6] > 0)
+
+
+def test_relative_regrasps_follow_observed_target_geometry():
+    relative = np.asarray([-.04, .006, -.03], np.float32)
+    candidates = relative_regrasp_macros(relative)
+    assert {chunk.shape for chunk in candidates.values()} == {(50, 7)}
+    assert len(candidates) == 6
+    for chunk in candidates.values():
+        assert chunk[6:16, 0].mean() < 0
+        assert chunk[6:16, 1].mean() > 0
+        assert np.all(chunk[16:28, 2] < 0)
+        assert np.all(chunk[-10:, 2] > 0)
+        assert np.all(chunk[-10:, 6] > 0)
