@@ -10,7 +10,9 @@ README仍保留在对应代码目录，每日记录保留在`daily_progress/`。
 3. [Failure_Aware_Embodied_SlotSSM.md](Failure_Aware_Embodied_SlotSSM.md)：最终方法愿景。
 4. [LIBERO10_NATURAL_FAILURE_AUDIT.md](LIBERO10_NATURAL_FAILURE_AUDIT.md)：
    100条自然基线和重点失败审计。
-5. [CURRENT_PROGRESS_2026-07-24.md](CURRENT_PROGRESS_2026-07-24.md)：早期集中进度快照。
+5. [TASK_RECOVERY_TRANSFER_PLAYBOOK.md](TASK_RECOVERY_TRANSFER_PLAYBOOK.md)：
+   将Task6恢复方法迁移到Task9等新任务的操作规范。
+6. [CURRENT_PROGRESS_2026-07-24.md](CURRENT_PROGRESS_2026-07-24.md)：早期集中进度快照。
 
 其他参考：
 

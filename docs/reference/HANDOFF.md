@@ -1,6 +1,6 @@
 # naive-e-slotssm / Failure-Aware Embodied-SlotSSM 交接文档
 
-更新时间：2026-07-30（Asia/Shanghai）
+更新时间：2026-07-31（Asia/Shanghai）
 
 本文写给一个完全没有聊天上下文的新会话。请先完整阅读本文，再阅读文末列出的核心设计文档。不要直接从最新的恢复控制实验继续堆规则。
 
@@ -56,6 +56,8 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 8. `daily_progress/2026-07-21.md`：早期详细工作记录。
 9. `LIBERO10_NATURAL_FAILURE_AUDIT.md`：100条标准自然基线、17条重点失败分类
    和当前主任务选择。
+10. `TASK_RECOVERY_TRANSFER_PLAYBOOK.md`：Task6有效恢复方法的跨任务复用规范，包括
+    角色/关系定义、自然基线、同快照候选分叉、评分、在线验证和Task9映射。
 
 ## 4. 当前系统由什么组成
 
