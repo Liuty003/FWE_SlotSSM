@@ -3559,3 +3559,48 @@ ep6在200步尝试边缘夹持，布丁逐步转斜并留在桌面；230步自�
 两条均使用可观测slot几何自动触发、视觉相对候选和学习式评分，不使用固定触发或强制
 候选。ep6在仍有脆弱接触的220步进行状态fork会导致MuJoCo数值爆炸，因此最终方法等待
 至230步确认脱离；旋转腕部的激进开发尝试也被弃用，不属于最终结果。
+
+### 20.36 Task9自然掉落/空抓迁移启动
+
+根据用户逐条视频复核，第二主任务选择LIBERO-10 task9 episode5运输掉落和episode6
+碰撞后空抓。新增：
+
+```text
+scripts/build_task9_execution_labels.py
+scripts/extract_natural_baseline_frames.py
+scripts/collect_task9_failure_candidate_branches.py
+recovery/tests/test_task9_execution_labels.py
+```
+
+离线teacher事件：
+
+- ep5：第76步闭爪获取，第91步验证抬升`0.0621 m`且相对漂移仅`0.0056 m`；
+  第93步杯子从峰值下落`0.0531 m`且夹爪相对漂移`0.0575 m`，确认
+  `transport_drop`。
+- ep6：第95步短促闭爪和第156步持续闭爪均未获取；分别在第110/171步确认。第一
+  次获取验证抬升仅`0.0010 m`，因此第110步已可作为恢复状态。
+
+对齐RGB共1040帧：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task9-natural-baseline-visual-ep5-6-v1
+```
+
+ep5在第93步刚检测到掉落时分叉，杯子尚未落稳；部分候选进入杯口但不能完成清楚抬升。
+因此闭环设计改为“93步检测并停止危险动作→安全回撤/等待→100步视觉重观测→生成
+候选”。稳定状态8个低轴向尺度候选全部保持接触且最终抬升超过`0.034 m`：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task9-natural-ep5-t100-stable-relative-candidates-v2
+```
+
+ep6第110步同样测试8个候选，6个最终保持接触；成功候选抬升约`0.009–0.030 m`，
+两条深下降候选失败，已产生可供评分器学习的正负差异：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task9-natural-ep6-t110-relative-candidates-v1
+```
+
+以上候选几何使用privileged分支状态，只证明oracle恢复上限和建立候选标签，不是最终
+在线视觉结果。下一步必须训练/校准Task9杯子—夹爪—微波炉角色Slot，用视觉相对几何
+替换teacher输入；选中候选后还需续跑OpenVLA直到杯子入炉且门关闭。
