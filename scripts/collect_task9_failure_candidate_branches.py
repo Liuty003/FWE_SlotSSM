@@ -41,6 +41,19 @@ def arguments():
     parser.add_argument("--failure-timestep", type=int, required=True)
     parser.add_argument("--wait-steps", type=int, default=20)
     parser.add_argument(
+        "--grasp-relative-reference", type=float, nargs=3,
+        metavar=("DX", "DY", "DZ"),
+        help=(
+            "Desired mug xyz relative to EEF after a stable grasp. Candidate "
+            "motion targets the residual to this relation."
+        ),
+    )
+    parser.add_argument(
+        "--stress-transport-steps", type=int, default=0,
+        help="After lift verification, retain grasp and move +y for this many steps.",
+    )
+    parser.add_argument("--stress-transport-action", type=float, default=.30)
+    parser.add_argument(
         "--candidate-name", action="append",
         help="Optionally evaluate only named candidates (repeatable).",
     )
@@ -101,7 +114,12 @@ def main():
     finally:
         source_env.close()
 
-    macros = relative_regrasp_macros(relative)
+    grasp_reference = (
+        np.asarray(args.grasp_relative_reference, np.float32)
+        if args.grasp_relative_reference is not None else np.zeros(3, np.float32)
+    )
+    correction = relative - grasp_reference
+    macros = relative_regrasp_macros(correction)
     if args.candidate_name:
         missing = set(args.candidate_name) - set(macros)
         if missing:
@@ -145,6 +163,20 @@ def main():
                 attached_ever = attached_ever or attached
                 if done:
                     break
+            attached_before_stress = attached_ever and attached
+            stress_start_target = np.asarray(obs[TARGET_KEY], np.float32)
+            for _ in range(args.stress_transport_steps):
+                obs, _, done, _ = env.step(action(
+                    y=args.stress_transport_action, gripper=1.
+                ).tolist())
+                frames.append(np.ascontiguousarray(
+                    obs["agentview_image"][::-1, ::-1]
+                ))
+                _, attached = extract_target_gripper_contact(
+                    env.env.sim, target_name=TARGET_NAME
+                )
+                if done:
+                    break
             target_after = np.asarray(obs[TARGET_KEY], np.float32)
             eef_after = np.asarray(obs["robot0_eef_pos"], np.float32)
             _, attached_after = extract_target_gripper_contact(
@@ -162,6 +194,15 @@ def main():
             np.linalg.norm(target_after - target_before)
         )
         final_distance = float(np.linalg.norm(target_after - eef_after))
+        stress_target_displacement = float(
+            np.linalg.norm(target_after - stress_start_target)
+        )
+        transport_stable = bool(
+            attached_after
+            and stress_target_displacement > (
+                .01 if args.stress_transport_steps else 0.
+            )
+        )
         # Regrasp branches end after lift verification; insertion is evaluated
         # only after the selected candidate is resumed with OpenVLA.
         teacher_value = float(
@@ -180,6 +221,10 @@ def main():
             "attached_before": bool(attached_before),
             "attached_after": bool(attached_after),
             "attached_ever": bool(attached_ever),
+            "attached_before_stress": bool(attached_before_stress),
+            "stress_transport_steps": args.stress_transport_steps,
+            "stress_target_displacement_m": stress_target_displacement,
+            "transport_stable": transport_stable,
             "target_lift_m": target_lift,
             "target_displacement_m": target_displacement,
             "eef_target_distance_after_m": final_distance,
@@ -208,6 +253,8 @@ def main():
             "target_position": target_before.tolist(),
             "eef_position": eef_before.tolist(),
             "target_relative_to_eef_m": relative.tolist(),
+            "desired_grasp_relative_to_eef_m": grasp_reference.tolist(),
+            "candidate_correction_input_m": correction.tolist(),
             "attached": bool(attached_before),
             "candidate_geometry_source": "privileged_branch_teacher",
         },

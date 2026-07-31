@@ -3604,3 +3604,51 @@ ep6第110步同样测试8个候选，6个最终保持接触；成功候选抬升
 以上候选几何使用privileged分支状态，只证明oracle恢复上限和建立候选标签，不是最终
 在线视觉结果。下一步必须训练/校准Task9杯子—夹爪—微波炉角色Slot，用视觉相对几何
 替换teacher输入；选中候选后还需续跑OpenVLA直到杯子入炉且门关闭。
+
+### 20.37 Task9 ep5完整开发续跑与稳定抓取修正
+
+新增`run_task9_candidate_recovery_demo.py`，将原始自然掉落、候选重抓和OpenVLA续跑
+连接为完整视频。首轮发现原先“接触且抬升3 cm”的候选在运输中仍会从杯口滑落，
+因此该指标不能作为稳定恢复标签。
+
+成功ep2/8/9运输期间的共同杯子相对末端关系约为：
+
+```text
+(+0.007, +0.042, -0.069) m
+```
+
+候选改为对齐这一关系，并在短抬升后增加20步`+y`运输压力测试。ep5第100步的8个
+候选中，仅`relative_x040_y080_z085/z114`在额外移动约`0.073 m`后仍保持附着：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task9-natural-ep5-t100-stable-grasp-stress-candidates-v3
+```
+
+使用稳定候选后，开发链路实现：
+
+```text
+自然运输掉落
+→ 第93步teacher确认
+→ 第100步落稳重观测
+→ 稳定重抓
+→ OpenVLA运输到微波炉
+→ 释放前发现In未成立并保持抓取推进
+→ 首次In后继续8步建立关系裕量
+→ 原地释放、等待、竖直退出
+→ 杯子稳定留在微波炉
+```
+
+当前最好的v8视频与元数据：
+
+```text
+/data2/lty/naive-e-slotssm-runs/task9-natural-ep5-full-recovery-dev-v8-deep-insertion/task9-episode5.mp4
+/data2/lty/naive-e-slotssm-runs/task9-natural-ep5-full-recovery-dev-v8-deep-insertion/metadata.json
+```
+
+其`insertion_step=126`、最终`mug_inside_after=true`，但微波炉门没有关闭，正式task
+success仍为false。使用孤立关门子目标和完整原始指令分别续跑300步均未解决门阶段。
+因此下一步应从成功ep8/9抽取门阶段状态/动作，构建同快照关门候选和评分，而不是继续
+改变语言提示。
+
+必须诚实保留开发边界：v8使用offline teacher触发、privileged候选几何、强制选择稳定
+候选和oracle `In`关系插入门控；它是完整动作链的oracle上限，不是最终SlotSSM在线结果。
