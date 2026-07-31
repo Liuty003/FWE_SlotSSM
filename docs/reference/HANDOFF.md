@@ -59,6 +59,10 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 10. `TASK_RECOVERY_TRANSFER_PLAYBOOK.md`：Task6有效恢复方法的跨任务复用规范，包括
     角色/关系定义、自然基线、同快照候选分叉、评分、在线验证和Task9映射。
 
+当前跨任务迁移选择：Task9 episode5运输中掉落为第一主攻样本，episode6下降碰撞后
+空抓为第二主攻样本。两条都必须在重抓后继续完成杯子入微波炉和关门；episode2/8/9
+作为正常shadow对照。详细逐episode人工复核见`LIBERO10_NATURAL_FAILURE_AUDIT.md`。
+
 ## 4. 当前系统由什么组成
 
 仓库中保留两条不同性质的系统。论文复现链路是：
