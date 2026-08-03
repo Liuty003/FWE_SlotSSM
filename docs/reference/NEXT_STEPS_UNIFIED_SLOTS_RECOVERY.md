@@ -27,6 +27,7 @@ OpenVLA 暂保持冻结；当前 slot 不会伪装成已经接入 OpenVLA 内部
 - Task6：ep1 空夹、ep6 边缘滑脱已有视觉触发、可观测几何候选和成功恢复视频。
 - Task9：ep5 运输掉落、ep6 空抓已有候选分支；当前候选几何仍有 privileged teacher 成分。
 - `natural-recovery-training-v1`：4 个自然失败状态、16 条匹配候选分支、视频、动作宏和终态 teacher outcome。
+- Task6 ep7 t=211：新增一个独立的自然漏抓/边缘滑脱状态，4 条对齐分支；3 条稳定夹持并抬升约 2.5--2.7 cm，1 条重抓后脱落。它为候选风险排序提供同一状态下的正、负结果。
 - `RecoverySlotSSM` / unified candidate head：已有共享时序 memory 的最小代码，但数据量不足以证明泛化。
 
 ## 阶段 1：正式恢复序列采集（已完成，2026-08-03）
@@ -60,15 +61,18 @@ raw `online_observation` 未含 teacher pose/contact。产物：
 
 先在 Task6 开发集完成，保留独立 episode 做最终测试；随后才迁移至 Task9。
 
-当前已使用冻结的 Task6 三角色 slot encoder 提取 8 条 Task6 恢复分支（400 步），每条
-得到`[T, 3, 96]` role slots及角色几何。它是 enrichment，不用这 8 条数据反过来训练
-slot encoder。
+当前已使用冻结的 Task6 三角色 slot encoder 提取 12 条 Task6 恢复分支（600 步，源
+episode 为 1、6、7），每条得到`[T, 3, 96]` role slots及角色几何。提取工具支持合并多个
+raw root，同时在 metadata 中保留来源；这只是 enrichment，不用这些分支反过来训练 slot
+encoder。
 
-已完成两个不夸大的 dynamics smoke：一步预测不如 identity（应弃用）；16-step action
-block 预测在独立 source episode 上比 identity 低约 3--5%，说明动作块中存在可学习的
-slot effect，但只有ep1训练、ep6验证各136个 transition，仍远远不足以接入风险模型。
-下一步是扩展到更多**独立自然失败状态**，而不是在这8个高度相关分支上训练单标量风险头
-或 Recovery LoRA。
+已完成三个不夸大的 dynamics smoke：一步预测不如 identity（应弃用）；16-step action
+block 在 ep1 训练、ep6 验证时仅比 identity 低约 3--5%；扩展后使用 ep1+ep6 训练、完全
+留出 ep7 验证（272 / 136 个 transition），最佳点总误差比 identity 低约 6.5%（cosine
+约 5.8%，Smooth-L1 约 8.2%）。这说明动作块中存在可学习的 slot effect，但只有 3 个
+源失败状态，仍远远不足以接入风险模型。下一步继续扩展**独立自然失败状态**，并保留每个
+状态内的成功、未抓起和再脱落候选；不在这些高度相关分支上训练单标量风险头或 Recovery
+LoRA。
 
 ## 阶段 3：动作条件 future 与统一候选风险
 

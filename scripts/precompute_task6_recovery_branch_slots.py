@@ -26,7 +26,17 @@ from scripts.train_task6_execution_slots import Task6ExecutionSlots  # noqa: E40
 
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--raw-root", type=Path, required=True)
+    parser.add_argument(
+        "--raw-root",
+        type=Path,
+        action="append",
+        required=True,
+        help=(
+            "Root containing raw branch trajectories. Repeat this option to "
+            "combine independently collected natural failure states into one "
+            "slot-enrichment dataset."
+        ),
+    )
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -88,10 +98,16 @@ def main() -> None:
     if not args.checkpoint.is_file():
         raise FileNotFoundError(args.checkpoint)
     sources = []
-    for path in sorted(args.raw_root.rglob("raw-transitions.jsonl")):
-        sequence = rows(path)
-        if int(sequence[0]["task_id"]) == 6:
-            sources.append((path, sequence))
+    seen_sources = set()
+    for raw_root in args.raw_root:
+        for path in sorted(raw_root.rglob("raw-transitions.jsonl")):
+            resolved = path.resolve()
+            if resolved in seen_sources:
+                continue
+            sequence = rows(path)
+            if int(sequence[0]["task_id"]) == 6:
+                sources.append((path, sequence))
+                seen_sources.add(resolved)
     if not sources:
         raise FileNotFoundError(f"no task-6 raw sequences below {args.raw_root}")
 
@@ -150,6 +166,7 @@ def main() -> None:
         "schema_version": 1,
         "kind": "task6_recovery_branch_grounded_role_slots",
         "checkpoint": str(args.checkpoint.resolve()),
+        "raw_roots": [str(path.resolve()) for path in args.raw_root],
         "input_contract": "raw RGB plus recovery action only",
         "role_order": ["porcelain_mug", "plate", "pudding"],
         "teacher_fields_retained_for_evaluation_only": [
