@@ -73,6 +73,18 @@ Task9 已新增 RGB-only 三角色 encoder（目标白黄杯、微波炉、干�
 步、每条 `[T,3,96]`）；slot encoder 仅读 RGB，teacher mask 不进入 recovery 输入。当前
 Task6 和 Task9 encoder 仍是任务专属，不能称为跨任务共享视觉 slot 主干。
 
+已建立 canonical branch manifest：Task6 将 `(mug, plate, pudding)` 重排为
+`(recovery_target=pudding, context=plate, distractor=mug)`；Task9 本来就是
+`(target mug, microwave, distractor mug)`。当前 7 个源失败状态、28 条候选，其中 14 条
+达到“attached 且最终抬升至少 1 cm”的可验证重抓；Task9 ep4 是四个候选均不可行的自然空夹
+状态，因此统一策略必须允许 abstain，而不能强制挑一个动作。
+
+共享 canonical candidate head 已做严格 smoke：训练只用 task6 ep1/6 与 task9 ep5/6，
+完整留出 task6 ep7、task9 ep1、task9 ep4。即使加入 abstain，最佳 group-policy accuracy
+仍只有 1/3；它能拒绝 ep4，却不能稳定为 ep7/ep1 选对候选。该模型只证明了
+`task-specific slots -> canonical role order -> task adapter -> shared head` 接口可训练，**不**
+可用于线上选择、也不是统一风险闭环的泛化结果。
+
 已完成三个不夸大的 dynamics smoke：一步预测不如 identity（应弃用）；16-step action
 block 在 ep1 训练、ep6 验证时仅比 identity 低约 3--5%；扩展后使用 ep1+ep6 训练、完全
 留出 ep7 验证（272 / 136 个 transition），最佳点总误差比 identity 低约 6.5%（cosine
@@ -80,6 +92,9 @@ block 在 ep1 训练、ep6 验证时仅比 identity 低约 3--5%；扩展后使�
 源失败状态，仍远远不足以接入风险模型。下一步继续扩展**独立自然失败状态**，并保留每个
 状态内的成功、未抓起和再脱落候选；随后先为每个任务分别训练/审计风险头，再讨论共享视觉
 主干。不在这些高度相关分支上训练单标量风险头或 Recovery LoRA。
+
+在重新训练共享 head 前，最低数据门槛为：每个任务至少 6 个独立、可重放的失败源状态（同时
+含可重抓与不可行/abstain），以及对应自然正常轨迹窗口作为 `p_fail` 负例；划分必须整组留出。
 
 ## 阶段 3：动作条件 future 与统一候选风险
 
