@@ -113,6 +113,13 @@ def main() -> None:
         group = groups.setdefault(row["source_group_id"], {"task_id": row["task_id"], "candidates": 0, "verified": 0})
         group["candidates"] += 1
         group["verified"] += int(row["label_teacher_only"]["regrasp_verified"])
+    groups_per_task = {
+        task_id: sum(group["task_id"] == task_id for group in groups.values())
+        for task_id in sorted({row["task_id"] for row in records})
+    }
+    insufficient_tasks = [
+        str(task_id) for task_id, count in groups_per_task.items() if count < 6
+    ]
     report = {
         "schema_version": 1,
         "kind": "canonical_recovery_candidate_branch_manifest",
@@ -125,9 +132,13 @@ def main() -> None:
             str(task_id): sum(row["task_id"] == task_id for row in records)
             for task_id in sorted({row["task_id"] for row in records})
         },
+        "source_groups_per_task": groups_per_task,
         "training_readiness": (
-            "shared-head-smoke-only: task-specific RGB encoders and fewer than four "
-            "independent source groups per task"
+            "shared-head-smoke-only: task-specific RGB encoders and fewer than six "
+            "independent source groups for task(s) " + ", ".join(insufficient_tasks)
+            if insufficient_tasks else
+            "ready for a group-held-out shared-head experiment; shared visual encoder and "
+            "full p_fail/future-slot loop still require separate audits"
         ),
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)

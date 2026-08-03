@@ -96,6 +96,17 @@ block 在 ep1 训练、ep6 验证时仅比 identity 低约 3--5%；扩展后使�
 在重新训练共享 head 前，最低数据门槛为：每个任务至少 6 个独立、可重放的失败源状态（同时
 含可重抓与不可行/abstain），以及对应自然正常轨迹窗口作为 `p_fail` 负例；划分必须整组留出。
 
+### 最近扩展（2026-08-03，采集中）
+
+- Task6 episode 10 在原始 OpenVLA rollout 中于 `t=243` 出现自然漏抓/滑脱；四条重抓分支均
+  能稳定夹持并抬升约 2.8 cm。Task6 已有 4 个独立源状态、16 条 branch，且 episode 0--9 的
+  4,379 帧正常/失败原始观察已统一提取为连续 role-slot 序列，供后续 `p_fail` 的自然负窗口使用。
+- Task9 episode 10 的原始 OpenVLA rollout 已确认自然失败：先抓起目标杯，后在 `t=259` 起出现
+  连续空抓，最终未完成任务。四条 matched regrasp branch 的审计通过；其中两条稳定抬升约
+  1.9/2.1 cm、一条仅接触未抬起、一条失败。已完成 RGB slot enrichment。
+- 合并 manifest 现有 Task6 的 ep1/6/7/10 与 Task9 的 ep1/4/5/6/10：共 9 个独立源状态、36 条
+  branch、20 条可验证的正向重抓。Task6 有 4 个、Task9 有 5 个状态，仍不满足每任务 6 个的训练门槛。
+
 ## 阶段 3：动作条件 future 与统一候选风险
 
 训练短视界 `D_psi(slot_memory, candidate_action, proprio)`，预测 candidate 后对象状态/关系。
