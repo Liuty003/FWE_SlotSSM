@@ -62,8 +62,13 @@ raw `online_observation` 未含 teacher pose/contact。产物：
 
 当前已使用冻结的 Task6 三角色 slot encoder 提取 8 条 Task6 恢复分支（400 步），每条
 得到`[T, 3, 96]` role slots及角色几何。它是 enrichment，不用这 8 条数据反过来训练
-slot encoder。下一步是把这些 sequence 与自然 nominal/failure windows 合并，训练/评测单
-标量风险头；不能仅在这 8 条高度相关的分支上报告泛化。
+slot encoder。
+
+已完成两个不夸大的 dynamics smoke：一步预测不如 identity（应弃用）；16-step action
+block 预测在独立 source episode 上比 identity 低约 3--5%，说明动作块中存在可学习的
+slot effect，但只有ep1训练、ep6验证各136个 transition，仍远远不足以接入风险模型。
+下一步是扩展到更多**独立自然失败状态**，而不是在这8个高度相关分支上训练单标量风险头
+或 Recovery LoRA。
 
 ## 阶段 3：动作条件 future 与统一候选风险
 
