@@ -113,8 +113,11 @@ block 在 ep1 训练、ep6 验证时仅比 identity 低约 3--5%；扩展后使�
   `p_fail` head。严格留出 Task6 ep7/9 与 Task9 ep1/6 的四条完整轨迹；选中的 checkpoint 在
   其中 3 条真实失败源触发、1 条正常轨迹未触发。该数字只用于确认端到端训练/组隔离评估可运行，
   不构成泛化或线上门控主张；候选 future head 尚未与其联训。
-- 合并 manifest 现有 Task6 的 ep1/6/7/10 与 Task9 的 ep1/4/5/6/10：共 9 个独立源状态、36 条
-  branch、20 条可验证的正向重抓。Task6 有 4 个、Task9 有 5 个状态，仍不满足每任务 6 个的训练门槛。
+- Task9 ep13 提供第 6 个自然失败源：它先空抓，经原 OpenVLA 随后重试才成功；从确认空抓的
+  `t=92` 分出四条候选均稳定重抓并抬升 3.1--3.6 cm，raw transition 审计通过。
+- 最新 canonical manifest：Task6 的 ep1/6/7/10 与 Task9 的 ep1/4/5/6/10/13 共 10 个独立源、
+  40 条 branch、24 条可验证正向重抓。Task9 已达到 6 个源；Task6 仍为 4 个，故统一 future
+  candidate head 仍不能进行有意义的跨任务组隔离训练。
 
 ## 阶段 3：动作条件 future 与统一候选风险
 
