@@ -64,17 +64,22 @@ raw `online_observation` 未含 teacher pose/contact。产物：
 
 当前已使用冻结的 Task6 三角色 slot encoder 提取 12 条 Task6 恢复分支（600 步，源
 episode 为 1、6、7），每条得到`[T, 3, 96]` role slots及角色几何。提取工具支持合并多个
-raw root，同时在 metadata 中保留来源；Task9 ep1 的四条 raw branch 已采集并审计，待使用其
-对应的视觉角色 encoder 做同构 enrichment。这只是 enrichment，不用这些分支反过来训练 slot
-encoder。
+raw root，同时在 metadata 中保留来源。
+
+Task9 已新增 RGB-only 三角色 encoder（目标白黄杯、微波炉、干扰瓷杯）。其训练 mask 来自
+逐步重放且通过 2 mm 状态误差检查的 simulator segmentation；一旦重放漂移则仅保留此前的
+验证前缀。ep1/ep6 完全不参与训练，在二者上目标杯/微波炉/干扰杯 IoU 为
+0.679 / 0.878 / 0.468。它已对 ep1、ep5、ep6 的 12 条恢复分支完成同构 enrichment（680
+步、每条 `[T,3,96]`）；slot encoder 仅读 RGB，teacher mask 不进入 recovery 输入。当前
+Task6 和 Task9 encoder 仍是任务专属，不能称为跨任务共享视觉 slot 主干。
 
 已完成三个不夸大的 dynamics smoke：一步预测不如 identity（应弃用）；16-step action
 block 在 ep1 训练、ep6 验证时仅比 identity 低约 3--5%；扩展后使用 ep1+ep6 训练、完全
 留出 ep7 验证（272 / 136 个 transition），最佳点总误差比 identity 低约 6.5%（cosine
 约 5.8%，Smooth-L1 约 8.2%）。这说明动作块中存在可学习的 slot effect，但只有 3 个
 源失败状态，仍远远不足以接入风险模型。下一步继续扩展**独立自然失败状态**，并保留每个
-状态内的成功、未抓起和再脱落候选；不在这些高度相关分支上训练单标量风险头或 Recovery
-LoRA。
+状态内的成功、未抓起和再脱落候选；随后先为每个任务分别训练/审计风险头，再讨论共享视觉
+主干。不在这些高度相关分支上训练单标量风险头或 Recovery LoRA。
 
 ## 阶段 3：动作条件 future 与统一候选风险
 
