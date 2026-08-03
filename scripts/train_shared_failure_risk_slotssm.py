@@ -135,6 +135,8 @@ def evaluate(model, loader, device: torch.device) -> dict:
             "recall": tp / max(tp + fn, 1),
             "accuracy": float((target == predicted).float().mean()),
         }
+        precision, recall = metrics[name]["precision"], metrics[name]["recall"]
+        metrics[name]["f1"] = 2. * precision * recall / max(precision + recall, 1e-8)
     # An episode is a positive alert if any window crosses threshold. This
     # exposes false alarms that frame accuracy can hide.
     episodes = {}
@@ -182,7 +184,10 @@ def main() -> None:
             row = {"step": step, "train_bce": float(loss), "validation": report}
             history.append(row)
             print(json.dumps(row), flush=True)
-            score = report["all"]["recall"] + report["all"]["precision"]
+            # Balance the tasks equally.  A pooled frame score can select a
+            # model that entirely misses Task6 because Task9 has many more
+            # positive persistence labels.
+            score = .5 * (report["task6"]["f1"] + report["task9"]["f1"])
             if score > best:
                 best = score
                 save_file({key: value.detach().cpu().contiguous() for key, value in model.state_dict().items()}, args.output_dir / "shared-risk-slotssm-best.safetensors")
