@@ -28,6 +28,7 @@ OpenVLA 暂保持冻结；当前 slot 不会伪装成已经接入 OpenVLA 内部
 - Task9：ep5 运输掉落、ep6 空抓已有候选分支；当前候选几何仍有 privileged teacher 成分。
 - `natural-recovery-training-v1`：4 个自然失败状态、16 条匹配候选分支、视频、动作宏和终态 teacher outcome。
 - Task6 ep7 t=211：新增一个独立的自然漏抓/边缘滑脱状态，4 条对齐分支；3 条稳定夹持并抬升约 2.5--2.7 cm，1 条重抓后脱落。它为候选风险排序提供同一状态下的正、负结果。
+- Task9 ep1 t=180：新增不稳定抓取/碰撞后掉落状态，4 条对齐分支；其中 1 条重新稳定抓起并抬升约 2.9 cm，3 条未能保持夹持。完整 Task9 的放入微波炉、关门尚不计入这批分支的恢复成功。
 - `RecoverySlotSSM` / unified candidate head：已有共享时序 memory 的最小代码，但数据量不足以证明泛化。
 
 ## 阶段 1：正式恢复序列采集（已完成，2026-08-03）
@@ -63,7 +64,8 @@ raw `online_observation` 未含 teacher pose/contact。产物：
 
 当前已使用冻结的 Task6 三角色 slot encoder 提取 12 条 Task6 恢复分支（600 步，源
 episode 为 1、6、7），每条得到`[T, 3, 96]` role slots及角色几何。提取工具支持合并多个
-raw root，同时在 metadata 中保留来源；这只是 enrichment，不用这些分支反过来训练 slot
+raw root，同时在 metadata 中保留来源；Task9 ep1 的四条 raw branch 已采集并审计，待使用其
+对应的视觉角色 encoder 做同构 enrichment。这只是 enrichment，不用这些分支反过来训练 slot
 encoder。
 
 已完成三个不夸大的 dynamics smoke：一步预测不如 identity（应弃用）；16-step action
