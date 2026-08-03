@@ -104,6 +104,10 @@ block 在 ep1 训练、ep6 验证时仅比 identity 低约 3--5%；扩展后使�
 - Task9 episode 10 的原始 OpenVLA rollout 已确认自然失败：先抓起目标杯，后在 `t=259` 起出现
   连续空抓，最终未完成任务。四条 matched regrasp branch 的审计通过；其中两条稳定抬升约
   1.9/2.1 cm、一条仅接触未抬起、一条失败。已完成 RGB slot enrichment。
+- Task9 的连续风险输入已补齐：从 episode 0--9 的自然 OpenVLA 视频提取 4,408 帧，并以冻结的
+  RGB grounded role encoder 生成每帧 `[3,96]` slot、二维可观测角色几何、执行动作和夹爪开度。
+  空抓/掉落只保留为 teacher target；它们不进入模型输入。这一数据与 Task6 的连续 role-slot
+  序列共同构成当前失败风险头的自然正负窗口。
 - 合并 manifest 现有 Task6 的 ep1/6/7/10 与 Task9 的 ep1/4/5/6/10：共 9 个独立源状态、36 条
   branch、20 条可验证的正向重抓。Task6 有 4 个、Task9 有 5 个状态，仍不满足每任务 6 个的训练门槛。
 
