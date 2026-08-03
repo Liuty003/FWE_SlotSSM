@@ -108,6 +108,11 @@ block 在 ep1 训练、ep6 验证时仅比 identity 低约 3--5%；扩展后使�
   RGB grounded role encoder 生成每帧 `[3,96]` slot、二维可观测角色几何、执行动作和夹爪开度。
   空抓/掉落只保留为 teacher target；它们不进入模型输入。这一数据与 Task6 的连续 role-slot
   序列共同构成当前失败风险头的自然正负窗口。
+- 已训练第一版共享 current-risk SlotSSM：两个 task-specific frozen RGB encoder 的 slot 先做
+  canonical role order 对齐，经过各自输入 adapter 后进入**同一个** Mamba2 backbone 与同一个
+  `p_fail` head。严格留出 Task6 ep7/9 与 Task9 ep1/6 的四条完整轨迹；选中的 checkpoint 在
+  其中 3 条真实失败源触发、1 条正常轨迹未触发。该数字只用于确认端到端训练/组隔离评估可运行，
+  不构成泛化或线上门控主张；候选 future head 尚未与其联训。
 - 合并 manifest 现有 Task6 的 ep1/6/7/10 与 Task9 的 ep1/4/5/6/10：共 9 个独立源状态、36 条
   branch、20 条可验证的正向重抓。Task6 有 4 个、Task9 有 5 个状态，仍不满足每任务 6 个的训练门槛。
 
