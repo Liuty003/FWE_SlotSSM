@@ -149,6 +149,9 @@ def summarise(group_name: str, item: dict[str, Any], branch_path: Path) -> dict[
         "best_teacher_value": best["teacher_value"],
         "any_attached_after": any(bool(row["attached_after"]) for row in candidates),
         "candidate_videos": [row["video"] for row in candidates],
+        "candidate_raw_trajectories": [
+            row.get("raw_trajectory") for row in candidates
+        ],
     }
 
 
@@ -177,8 +180,12 @@ def main() -> None:
     for name, item in selected.items():
         output = args.output_root / name
         command = [str(args.python), str(item["command"][0]), "--source-rollout", str(item["source"])]
+        command.extend(["--failure-type", str(item["failure_type"])])
         command.extend(str(value) for value in item["command"][1:])
-        command.extend(["--output-dir", str(output)])
+        command.extend([
+            "--output-dir", str(output),
+            "--trajectory-dir", str(output / "raw-trajectories"),
+        ])
         commands.append((name, command))
 
     if args.dry_run:

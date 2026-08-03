@@ -23,6 +23,7 @@ os.environ.setdefault(
 from recovery.teachers.sim_contact import (  # noqa: E402
     extract_target_gripper_contact,
 )
+from recovery.data.branch_trajectory import BranchTrajectoryWriter  # noqa: E402
 from scripts.build_task6_execution_labels import (  # noqa: E402
     MUG,
     PUDDING,
@@ -44,6 +45,10 @@ def arguments():
     )
     parser.add_argument("--episode-id", type=int, default=6)
     parser.add_argument("--failure-timestep", type=int, default=211)
+    parser.add_argument(
+        "--failure-type",
+        help="Human-audited source failure category; stored as provenance only.",
+    )
     parser.add_argument(
         "--target-role", choices=("pudding", "mug"), default="pudding"
     )
@@ -71,6 +76,14 @@ def arguments():
         help="Optionally evaluate only named candidates (repeatable).",
     )
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--trajectory-dir", type=Path,
+        help=(
+            "Optional root for aligned per-step raw recovery trajectories. "
+            "This records media/actions/teacher labels without fabricating "
+            "post-fork OpenVLA nominal actions."
+        ),
+    )
     parser.add_argument("--fps", type=int, default=20)
     return parser.parse_args()
 
@@ -289,7 +302,7 @@ def object_positions(obs):
 def main():
     args = arguments()
     from libero.libero import benchmark, get_libero_path
-    from libero.libero.envs import OffScreenRenderEnv
+    from libero.libero.envs import OffScreenRenderEnv, SegmentationRenderEnv
 
     if (args.source_rollout is None) == (args.source_sim_state is None):
         raise ValueError("provide exactly one source rollout or source sim state")
@@ -314,10 +327,15 @@ def main():
     )
 
     def make_env():
-        env = OffScreenRenderEnv(
+        env_class = (
+            SegmentationRenderEnv
+            if args.trajectory_dir is not None else OffScreenRenderEnv
+        )
+        env = env_class(
             bddl_file_name=str(bddl),
             camera_heights=256,
             camera_widths=256,
+            camera_depths=args.trajectory_dir is not None,
         )
         env.seed(0)
         env.reset()
@@ -357,6 +375,14 @@ def main():
         _, attached_before = extract_target_gripper_contact(
             source_env.env.sim, target_name=target_name
         )
+        target_instance_id = (
+            source_env.instance_to_id.get(target_name)
+            if args.trajectory_dir is not None else None
+        )
+        source_nominal_action = (
+            by_timestep[args.failure_timestep].get("planned_action")
+            if args.source_rollout is not None else None
+        )
         source_env.close()
         source_env = None
         args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -385,7 +411,7 @@ def main():
             }
         if args.macro_kind.startswith("cup-") and args.target_role != "mug":
             raise ValueError("cup macros require --target-role mug")
-        for name, chunk in macros.items():
+        for candidate_index, (name, chunk) in enumerate(macros.items()):
             # A flattened MuJoCo state does not contain robosuite controller
             # goals. Reusing one fork across candidates leaks controller
             # history and corrupts later counterfactual labels.
@@ -405,13 +431,67 @@ def main():
                 frames = [np.ascontiguousarray(
                     branch_obs["agentview_image"][::-1, ::-1]
                 )]
+                trajectory_writer = (
+                    BranchTrajectoryWriter(
+                        args.trajectory_dir,
+                        task_suite=TASK_SUITE,
+                        task_id=TASK_ID,
+                        source_episode_id=args.episode_id,
+                        failure_timestep=args.failure_timestep,
+                        candidate_name=name,
+                        candidate_index=candidate_index,
+                        source_rollout=(
+                            str(args.source_rollout)
+                            if args.source_rollout is not None else
+                            str(args.source_sim_state)
+                        ),
+                        failure_type=args.failure_type,
+                        target_name=target_name,
+                        target_instance_id=target_instance_id,
+                        source_nominal_action=source_nominal_action,
+                    )
+                    if args.trajectory_dir is not None else None
+                )
+                previous_recovery_action = None
                 max_collateral_displacement = 0.0
                 min_eef_target_distance = float("inf")
                 attached_ever = False
-                for candidate_action in chunk:
+                for branch_step, candidate_action in enumerate(chunk):
+                    pre_action_obs = branch_obs
+                    target_before_step = np.asarray(
+                        pre_action_obs[target_key], np.float32
+                    )
+                    contact_before_step, attached_before_step = (
+                        extract_target_gripper_contact(
+                            branch_env.env.sim, target_name=target_name
+                        )
+                    )
                     branch_obs, _, done, _ = branch_env.step(
                         candidate_action.tolist()
                     )
+                    contact_after_step, attached_after_step = (
+                        extract_target_gripper_contact(
+                            branch_env.env.sim, target_name=target_name
+                        )
+                    )
+                    if trajectory_writer is not None:
+                        trajectory_writer.record(
+                            step=branch_step,
+                            observation=pre_action_obs,
+                            recovery_action=candidate_action,
+                            previous_recovery_action=previous_recovery_action,
+                            teacher_contact_before=contact_before_step,
+                            teacher_attached_before=attached_before_step,
+                            teacher_target_position_before=target_before_step,
+                            teacher_contact_after=contact_after_step,
+                            teacher_attached_after=attached_after_step,
+                            teacher_target_position_after=np.asarray(
+                                branch_obs[target_key], np.float32
+                            ),
+                            task_success_after=bool(branch_env.check_success()),
+                            done_after=bool(done),
+                        )
+                    previous_recovery_action = candidate_action.copy()
                     frames.append(np.ascontiguousarray(
                         branch_obs["agentview_image"][::-1, ::-1]
                     ))
@@ -510,6 +590,10 @@ def main():
                 "task_success_after": task_success_after,
                 "teacher_value": teacher_value,
                 "video": str(video),
+                "raw_trajectory": (
+                    str(trajectory_writer.path)
+                    if trajectory_writer is not None else None
+                ),
             }
             outcomes.append(outcome)
             print(json.dumps(outcome), flush=True)
