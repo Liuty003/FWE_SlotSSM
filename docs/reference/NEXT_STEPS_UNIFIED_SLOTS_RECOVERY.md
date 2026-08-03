@@ -29,7 +29,7 @@ OpenVLA 暂保持冻结；当前 slot 不会伪装成已经接入 OpenVLA 内部
 - `natural-recovery-training-v1`：4 个自然失败状态、16 条匹配候选分支、视频、动作宏和终态 teacher outcome。
 - `RecoverySlotSSM` / unified candidate head：已有共享时序 memory 的最小代码，但数据量不足以证明泛化。
 
-## 阶段 1：正式恢复序列采集（正在做）
+## 阶段 1：正式恢复序列采集（已完成，2026-08-03）
 
 升级 `collect_natural_recovery_training.py` 及 task6/task9 branch collector，使每个候选的每一步保存：
 
@@ -44,9 +44,14 @@ OpenVLA 暂保持冻结；当前 slot 不会伪装成已经接入 OpenVLA 内部
 action。数据按**源 episode**而非随机帧划分；同时保留候选宏和 MP4。slot 与 SlotSSM
 memory 不在采集时硬编码，而对该对齐数据进行可复现 enrichment。
 
-验收：4 组/16 分支均有完整 action sequence、所有声明的媒体路径存在、无 privileged field 泄漏到 `online_inputs`。
+验收已通过：4 组/16 分支、880 步；全部 RGB/depth/mask 路径存在，全部 mask 可见；
+raw `online_observation` 未含 teacher pose/contact。产物：
 
-## 阶段 2：Slot / memory enrichment 与风险数据
+```text
+/data2/lty/naive-e-slotssm-runs/natural-recovery-sequences-v1
+```
+
+## 阶段 2：Slot / memory enrichment 与风险数据（进行中）
 
 1. 对阶段 1 transition 批量计算 grounded role slots 与连续 SlotSSM memory；
 2. 写入当前 slot、next slot 和可观测 target-to-EEF relation；
@@ -54,6 +59,11 @@ memory 不在采集时硬编码，而对该对齐数据进行可复现 enrichmen
 4. 训练单标量 `p_fail`，重点报告 episode 级误触发、提前量和恢复窗口召回，不用帧准确率掩盖问题。
 
 先在 Task6 开发集完成，保留独立 episode 做最终测试；随后才迁移至 Task9。
+
+当前已使用冻结的 Task6 三角色 slot encoder 提取 8 条 Task6 恢复分支（400 步），每条
+得到`[T, 3, 96]` role slots及角色几何。它是 enrichment，不用这 8 条数据反过来训练
+slot encoder。下一步是把这些 sequence 与自然 nominal/failure windows 合并，训练/评测单
+标量风险头；不能仅在这 8 条高度相关的分支上报告泛化。
 
 ## 阶段 3：动作条件 future 与统一候选风险
 
