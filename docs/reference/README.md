@@ -1,26 +1,14 @@
 # 研究参考文档索引
 
-本目录集中保存项目级设计、交接、路线图、阶段总结和数据规范。代码组件自己的
-README仍保留在对应代码目录，每日记录保留在`daily_progress/`。
+文档已按 2026-08-05 的技术路线切分。新会话和后续实现只应从当前主线开始：
 
-建议新会话按以下顺序阅读：
+1. [unified_oft_slotssm/README.md](unified_oft_slotssm/README.md)
+2. [unified_oft_slotssm/NEXT_STEPS.md](unified_oft_slotssm/NEXT_STEPS.md)
+3. [unified_oft_slotssm/HANDOFF_2026-08-06_UNIFIED_OFT_SLOTSSM.md](unified_oft_slotssm/HANDOFF_2026-08-06_UNIFIED_OFT_SLOTSSM.md)
 
-1. [HANDOFF.md](HANDOFF.md)：当前目标、已完成工作、关键产物和下一步。
-2. [PROJECT_COMPLETION_ROADMAP.md](PROJECT_COMPLETION_ROADMAP.md)：完整项目路线图。
-3. [Failure_Aware_Embodied_SlotSSM.md](Failure_Aware_Embodied_SlotSSM.md)：最终方法愿景。
-4. [LIBERO10_NATURAL_FAILURE_AUDIT.md](LIBERO10_NATURAL_FAILURE_AUDIT.md)：
-   100条自然基线和重点失败审计。
-5. [TASK_RECOVERY_TRANSFER_PLAYBOOK.md](TASK_RECOVERY_TRANSFER_PLAYBOOK.md)：
-   将Task6恢复方法迁移到Task9等新任务的操作规范。
-6. [CURRENT_PROGRESS_2026-07-24.md](CURRENT_PROGRESS_2026-07-24.md)：早期集中进度快照。
-
-其他参考：
-
-- [Embodied-SlotSSM_paper_only_reproduction_spec.md](Embodied-SlotSSM_paper_only_reproduction_spec.md)
-- [Embodied-SlotSSM_reproduction_progress.md](Embodied-SlotSSM_reproduction_progress.md)
-- [Failure_Aware_Embodied_SlotSSM_implementation_review.md](Failure_Aware_Embodied_SlotSSM_implementation_review.md)
-- [Failure_Aware_Embodied_SlotSSM_root_cause_and_rebuild_plan.md](Failure_Aware_Embodied_SlotSSM_root_cause_and_rebuild_plan.md)
-- [recovery_expert_dataset_schema.md](recovery_expert_dataset_schema.md)
+[legacy_openvla/](legacy_openvla/README.md) 是旧 OpenVLA、候选宏和早期恢复材料的归档。
+这些文档只作历史追溯；不得将其中的基线、动作格式、人工触发或 privileged online
+输入混入当前 OpenVLA-OFT 统一模型。
 
 路径约定：
 

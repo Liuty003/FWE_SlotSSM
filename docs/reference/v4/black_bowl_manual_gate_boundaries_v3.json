@@ -1,0 +1,18 @@
+{
+  "kind": "black_bowl_drawer_manual_gate_boundaries_v3",
+  "label_source": "per-task closed-loop timing and kinematic-reachability audit",
+  "records": [
+    {
+      "task_id": 435,
+      "episode_id": 0,
+      "failure_timestep": 160,
+      "failure_type": "failed_bowl_acquisition"
+    },
+    {
+      "task_id": 445,
+      "episode_id": 0,
+      "failure_timestep": 128,
+      "failure_type": "failed_bowl_acquisition"
+    }
+  ]
+}

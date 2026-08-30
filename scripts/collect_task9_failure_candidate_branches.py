@@ -33,11 +33,21 @@ TASK_SUITE = "libero_10"
 TASK_ID = 9
 TARGET_KEY = "white_yellow_mug_1_pos"
 TARGET_NAME = "white_yellow_mug_1"
+# Optional task-specific diagnostic.  Task 3 reuses this collector for a
+# regrasp-only branch and has no microwave region.
+TARGET_REGION = "microwave_1_heating_region"
 
 
 def arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-rollout", type=Path, required=True)
+    # These defaults retain the task-9 collector behavior.  The same strictly
+    # offline fork mechanism is reusable for another LIBERO task by supplying
+    # its policy-visible observation key and simulator-only teacher name.
+    parser.add_argument("--task-id", type=int, default=TASK_ID)
+    parser.add_argument("--target-key", default=TARGET_KEY)
+    parser.add_argument("--target-name", default=TARGET_NAME)
+    parser.add_argument("--target-region", default=TARGET_REGION)
     parser.add_argument("--episode-id", type=int, required=True)
     parser.add_argument("--failure-timestep", type=int, required=True)
     parser.add_argument(
@@ -90,8 +100,8 @@ def main():
         raise ValueError("failure timestep is absent from source rollout")
 
     suite = benchmark.get_benchmark_dict()[TASK_SUITE]()
-    task = suite.get_task(TASK_ID)
-    initial_states = suite.get_task_init_states(TASK_ID)
+    task = suite.get_task(args.task_id)
+    initial_states = suite.get_task_init_states(args.task_id)
     bddl = (
         Path(get_libero_path("bddl_files"))
         / task.problem_folder / task.bddl_file
@@ -123,14 +133,14 @@ def main():
                 by_timestep[timestep]["executed_action"]
             )
         sim_state = source_env.get_sim_state()
-        target_before = np.asarray(obs[TARGET_KEY], np.float32)
+        target_before = np.asarray(obs[args.target_key], np.float32)
         eef_before = np.asarray(obs["robot0_eef_pos"], np.float32)
         relative = target_before - eef_before
         _, attached_before = extract_target_gripper_contact(
-            source_env.env.sim, target_name=TARGET_NAME
+            source_env.env.sim, target_name=args.target_name
         )
         target_instance_id = (
-            source_env.instance_to_id.get(TARGET_NAME)
+            source_env.instance_to_id.get(args.target_name)
             if args.trajectory_dir is not None else None
         )
         source_nominal_action = by_timestep[args.failure_timestep].get(
@@ -162,7 +172,7 @@ def main():
             controller.reset_goal()
             env.env.timestep = 0
             env.env.done = False
-            restored_target = np.asarray(obs[TARGET_KEY], np.float32)
+            restored_target = np.asarray(obs[args.target_key], np.float32)
             restore_error = float(
                 np.abs(restored_target - target_before).max()
             )
@@ -173,14 +183,14 @@ def main():
                 BranchTrajectoryWriter(
                     args.trajectory_dir,
                     task_suite=TASK_SUITE,
-                    task_id=TASK_ID,
+                    task_id=args.task_id,
                     source_episode_id=args.episode_id,
                     failure_timestep=args.failure_timestep,
                     candidate_name=name,
                     candidate_index=candidate_index,
                     source_rollout=str(args.source_rollout),
                     failure_type=args.failure_type,
-                    target_name=TARGET_NAME,
+                    target_name=args.target_name,
                     target_instance_id=target_instance_id,
                     source_nominal_action=source_nominal_action,
                 )
@@ -192,17 +202,17 @@ def main():
             for branch_step, candidate_action in enumerate(chunk):
                 pre_action_obs = obs
                 target_before_step = np.asarray(
-                    pre_action_obs[TARGET_KEY], np.float32
+                    pre_action_obs[args.target_key], np.float32
                 )
                 contact_before_step, attached_before_step = (
                     extract_target_gripper_contact(
-                        env.env.sim, target_name=TARGET_NAME
+                        env.env.sim, target_name=args.target_name
                     )
                 )
                 obs, _, done, _ = env.step(candidate_action.tolist())
                 contact_after_step, attached_after_step = (
                     extract_target_gripper_contact(
-                        env.env.sim, target_name=TARGET_NAME
+                        env.env.sim, target_name=args.target_name
                     )
                 )
                 if trajectory_writer is not None:
@@ -217,7 +227,7 @@ def main():
                         teacher_contact_after=contact_after_step,
                         teacher_attached_after=attached_after_step,
                         teacher_target_position_after=np.asarray(
-                            obs[TARGET_KEY], np.float32
+                            obs[args.target_key], np.float32
                         ),
                         task_success_after=bool(env.check_success()),
                         done_after=bool(done),
@@ -226,28 +236,28 @@ def main():
                 frames.append(np.ascontiguousarray(
                     obs["agentview_image"][::-1, ::-1]
                 ))
-                target = np.asarray(obs[TARGET_KEY], np.float32)
+                target = np.asarray(obs[args.target_key], np.float32)
                 eef_position = np.asarray(obs["robot0_eef_pos"], np.float32)
                 min_eef_target_distance = min(
                     min_eef_target_distance,
                     float(np.linalg.norm(target - eef_position)),
                 )
                 _, attached = extract_target_gripper_contact(
-                    env.env.sim, target_name=TARGET_NAME
+                    env.env.sim, target_name=args.target_name
                 )
                 attached_ever = attached_ever or attached
                 if done:
                     break
             attached_before_stress = attached_ever and attached
-            stress_start_target = np.asarray(obs[TARGET_KEY], np.float32)
+            stress_start_target = np.asarray(obs[args.target_key], np.float32)
             for stress_step in range(args.stress_transport_steps):
                 pre_action_obs = obs
                 target_before_step = np.asarray(
-                    pre_action_obs[TARGET_KEY], np.float32
+                    pre_action_obs[args.target_key], np.float32
                 )
                 contact_before_step, attached_before_step = (
                     extract_target_gripper_contact(
-                        env.env.sim, target_name=TARGET_NAME
+                        env.env.sim, target_name=args.target_name
                     )
                 )
                 stress_action = action(
@@ -256,7 +266,7 @@ def main():
                 obs, _, done, _ = env.step(stress_action.tolist())
                 contact_after_step, attached_after_step = (
                     extract_target_gripper_contact(
-                        env.env.sim, target_name=TARGET_NAME
+                        env.env.sim, target_name=args.target_name
                     )
                 )
                 if trajectory_writer is not None:
@@ -271,7 +281,7 @@ def main():
                         teacher_contact_after=contact_after_step,
                         teacher_attached_after=attached_after_step,
                         teacher_target_position_after=np.asarray(
-                            obs[TARGET_KEY], np.float32
+                            obs[args.target_key], np.float32
                         ),
                         task_success_after=bool(env.check_success()),
                         done_after=bool(done),
@@ -281,18 +291,20 @@ def main():
                     obs["agentview_image"][::-1, ::-1]
                 ))
                 _, attached = extract_target_gripper_contact(
-                    env.env.sim, target_name=TARGET_NAME
+                    env.env.sim, target_name=args.target_name
                 )
                 if done:
                     break
-            target_after = np.asarray(obs[TARGET_KEY], np.float32)
+            target_after = np.asarray(obs[args.target_key], np.float32)
             eef_after = np.asarray(obs["robot0_eef_pos"], np.float32)
             _, attached_after = extract_target_gripper_contact(
-                env.env.sim, target_name=TARGET_NAME
+                env.env.sim, target_name=args.target_name
             )
-            mug_inside = bool(env.env._eval_predicate(
-                ["in", TARGET_NAME, "microwave_1_heating_region"]
-            ))
+            mug_inside = (
+                bool(env.env._eval_predicate(["on", args.target_name, args.target_region]))
+                if args.target_region is not None
+                else None
+            )
             task_success = bool(env.check_success())
         finally:
             env.close()
@@ -353,7 +365,7 @@ def main():
         "schema_version": 1,
         "kind": "task9_matched_relative_regrasp_branches",
         "task_suite": TASK_SUITE,
-        "task_id": TASK_ID,
+        "task_id": args.task_id,
         "episode_id": args.episode_id,
         "failure_timestep": args.failure_timestep,
         "source_rollout": str(args.source_rollout),

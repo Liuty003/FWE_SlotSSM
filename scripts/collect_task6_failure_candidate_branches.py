@@ -13,7 +13,7 @@ import imageio.v2 as imageio
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LIBERO_ROOT = REPO_ROOT / "experiments" / "robot" / "libero"
+LIBERO_ROOT = Path("/data/lty/code/LIBERO-plus")
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(LIBERO_ROOT))
 os.environ.setdefault(
@@ -31,12 +31,13 @@ from scripts.build_task6_execution_labels import (  # noqa: E402
 )
 
 TASK_SUITE = "libero_10"
-TASK_ID = 6
 PLATE = "plate_1_pos"
 
 
 def arguments():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--task-id", type=int, default=6)
+    parser.add_argument("--libero-root", type=Path, default=LIBERO_ROOT)
     parser.add_argument("--source-rollout", type=Path)
     parser.add_argument(
         "--source-sim-state",
@@ -60,6 +61,16 @@ def arguments():
         help=(
             "Optional observable model prediction of target xyz relative to "
             "EEF. Used only by relative-regrasp candidate generation."
+        ),
+    )
+    parser.add_argument(
+        "--grasp-offset-xyz",
+        type=float,
+        nargs=3,
+        metavar=("DX", "DY", "DZ"),
+        help=(
+            "Teacher-only EEF grasp offset from the selected object's center. "
+            "Defaults to the audited mug/pudding offsets used by the Plus controller."
         ),
     )
     parser.add_argument(
@@ -301,6 +312,8 @@ def object_positions(obs):
 
 def main():
     args = arguments()
+    os.environ["LIBERO_CONFIG_PATH"] = str(args.libero_root / "baseline_libero_config")
+    sys.path.insert(0, str(args.libero_root))
     from libero.libero import benchmark, get_libero_path
     from libero.libero.envs import OffScreenRenderEnv, SegmentationRenderEnv
 
@@ -319,8 +332,8 @@ def main():
         if args.failure_timestep not in by_timestep:
             raise ValueError("failure timestep is absent from source rollout")
     suite = benchmark.get_benchmark_dict()[TASK_SUITE]()
-    task = suite.get_task(TASK_ID)
-    initial_states = suite.get_task_init_states(TASK_ID)
+    task = suite.get_task(args.task_id)
+    initial_states = suite.get_task_init_states(args.task_id)
     bddl = (
         Path(get_libero_path("bddl_files"))
         / task.problem_folder / task.bddl_file
@@ -397,7 +410,14 @@ def main():
             relative_regrasp_macros(
                 args.relative_target_xyz
                 if args.relative_target_xyz is not None
-                else before[target_key] - before_eef
+                else before[target_key]
+                + np.asarray(
+                    args.grasp_offset_xyz
+                    if args.grasp_offset_xyz is not None else
+                    ([0.0, 0.025, 0.10] if args.target_role == "mug" else [-0.003, -0.015, 0.016]),
+                    dtype=np.float32,
+                )
+                - before_eef
             )
             if args.macro_kind == "relative-regrasp"
             else macro_factory()
@@ -435,7 +455,7 @@ def main():
                     BranchTrajectoryWriter(
                         args.trajectory_dir,
                         task_suite=TASK_SUITE,
-                        task_id=TASK_ID,
+                        task_id=args.task_id,
                         source_episode_id=args.episode_id,
                         failure_timestep=args.failure_timestep,
                         candidate_name=name,
@@ -602,7 +622,7 @@ def main():
                 "schema_version": 1,
                 "kind": "task6_matched_macro_candidate_branches",
                 "task_suite": TASK_SUITE,
-                "task_id": TASK_ID,
+                "task_id": args.task_id,
                 "episode_id": args.episode_id,
                 "failure_timestep": args.failure_timestep,
                 "target_role": args.target_role,

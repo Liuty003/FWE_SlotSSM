@@ -2,8 +2,8 @@
 
 项目级设计、交接、路线图和实验审计统一收录在
 [docs/reference/](docs/reference/README.md)。当前工作请先阅读
-[HANDOFF](docs/reference/HANDOFF.md) 和
-[LIBERO-10自然失败审计](docs/reference/LIBERO10_NATURAL_FAILURE_AUDIT.md)。
+[OpenVLA-OFT + SlotSSM 执行流程](docs/reference/unified_oft_slotssm/NEXT_STEPS.md)
+和 [2026-08-06 交接](docs/reference/unified_oft_slotssm/HANDOFF_2026-08-06_UNIFIED_OFT_SLOTSSM.md)。
 
 Unofficial reimplementation of **Embodied-SlotSSM**, an object-centric temporal memory modeling framework for robotic manipulation, accepted at **AAAI 2026**.
 

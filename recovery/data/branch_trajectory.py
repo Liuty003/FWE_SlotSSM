@@ -23,8 +23,29 @@ def oriented_rgb(observation: Mapping[str, Any]) -> np.ndarray:
     )
 
 
+def oriented_wrist_rgb(observation: Mapping[str, Any]) -> np.ndarray:
+    """Return the wrist view in the same orientation as OpenVLA-OFT input."""
+    return np.ascontiguousarray(
+        np.asarray(observation["robot0_eye_in_hand_image"])[::-1, ::-1]
+    )
+
+
 def oriented_depth(observation: Mapping[str, Any]) -> np.ndarray | None:
     value = observation.get("agentview_depth")
+    if value is None:
+        return None
+    return np.ascontiguousarray(np.asarray(value)[::-1, ::-1].squeeze())
+
+
+def oriented_wrist_depth(observation: Mapping[str, Any]) -> np.ndarray | None:
+    value = observation.get("robot0_eye_in_hand_depth")
+    if value is None:
+        return None
+    return np.ascontiguousarray(np.asarray(value)[::-1, ::-1].squeeze())
+
+
+def oriented_instance_segmentation(observation: Mapping[str, Any]) -> np.ndarray | None:
+    value = observation.get("agentview_segmentation_instance")
     if value is None:
         return None
     return np.ascontiguousarray(np.asarray(value)[::-1, ::-1].squeeze())
@@ -110,9 +131,13 @@ class BranchTrajectoryWriter:
         self.source_nominal_action = source_nominal_action
         self.directory = root / candidate_name
         self.rgb_dir = self.directory / "rgb"
+        self.wrist_rgb_dir = self.directory / "wrist_rgb"
         self.depth_dir = self.directory / "depth"
+        self.wrist_depth_dir = self.directory / "wrist_depth"
+        self.instance_dir = self.directory / "instance"
         self.mask_dir = self.directory / "target_masks"
-        for path in (self.rgb_dir, self.depth_dir, self.mask_dir):
+        for path in (self.rgb_dir, self.wrist_rgb_dir, self.depth_dir,
+                     self.wrist_depth_dir, self.instance_dir, self.mask_dir):
             path.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / "raw-transitions.jsonl"
         self.path.write_text("", encoding="utf-8")
@@ -130,7 +155,8 @@ class BranchTrajectoryWriter:
             "failure_type": failure_type,
             "target_name": target_name,
             "online_input_contract": (
-                "rgb/depth/mask/proprio/previous action/recovery action only; "
+                "agentview_rgb/wrist_rgb/depth/mask/proprio/previous action/"
+                "recovery action only; "
                 "teacher fields are never deployment inputs"
             ),
         }
@@ -153,14 +179,28 @@ class BranchTrajectoryWriter:
     ) -> None:
         frame = f"step-{step:04d}"
         rgb_path = self.rgb_dir / f"{frame}.png"
+        wrist_rgb_path = self.wrist_rgb_dir / f"{frame}.png"
         depth_path = self.depth_dir / f"{frame}.npz"
+        wrist_depth_path = self.wrist_depth_dir / f"{frame}.npz"
+        instance_path = self.instance_dir / f"{frame}.npz"
         mask_path = self.mask_dir / f"{frame}.npz"
         imageio.imwrite(rgb_path, oriented_rgb(observation))
+        imageio.imwrite(wrist_rgb_path, oriented_wrist_rgb(observation))
         depth = oriented_depth(observation)
         if depth is not None:
             np.savez_compressed(depth_path, depth=depth.astype(np.float32))
         else:
             depth_path = None
+        wrist_depth = oriented_wrist_depth(observation)
+        if wrist_depth is not None:
+            np.savez_compressed(wrist_depth_path, depth=wrist_depth.astype(np.float32))
+        else:
+            wrist_depth_path = None
+        instance = oriented_instance_segmentation(observation)
+        if instance is not None:
+            np.savez_compressed(instance_path, instance=instance.astype(np.int32))
+        else:
+            instance_path = None
         mask, measurement = target_mask_measurement(
             observation, self.target_instance_id
         )
@@ -173,7 +213,9 @@ class BranchTrajectoryWriter:
             "branch_timestep": step,
             "online_observation": {
                 "rgb": str(rgb_path.resolve()),
+                "wrist_rgb": str(wrist_rgb_path.resolve()),
                 "depth": str(depth_path.resolve()) if depth_path else None,
+                "wrist_depth": str(wrist_depth_path.resolve()) if wrist_depth_path else None,
                 "target_mask": str(mask_path.resolve()) if mask_path else None,
                 "target_mask_measurement": measurement,
                 "proprio": robot_state(observation),
@@ -186,6 +228,9 @@ class BranchTrajectoryWriter:
                 # it is the baseline action at fork time, not a fabricated
                 # OpenVLA prediction for later counterfactual observations.
                 "source_nominal_action_at_fork": self.source_nominal_action,
+            },
+            "training_only": {
+                "instance_segmentation": str(instance_path.resolve()) if instance_path else None,
             },
             "teacher_only": {
                 "contact_before": dict(teacher_contact_before),
@@ -208,4 +253,3 @@ class BranchTrajectoryWriter:
         }
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-

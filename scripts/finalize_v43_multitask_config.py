@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Write deployment metadata after an already-completed multitask run."""
+import argparse,json,sys
+from dataclasses import asdict
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from recovery.data.v4_relation_features import load
+from recovery.models.v4_relational_recovery import V4ModelConfig
+p=argparse.ArgumentParser();p.add_argument('--features',type=Path,nargs='+',required=True);p.add_argument('--labels',type=Path,required=True);p.add_argument('--init-checkpoint',type=Path,required=True);p.add_argument('--output-dir',type=Path,required=True);a=p.parse_args();f=load(a.features[0]);cfg=V4ModelConfig(visual_dim=f.visual_tokens.shape[-1],action_hidden_dim=f.action_hidden.shape[-1],action_chunk=8,action_dim=7,num_slots=16,slot_dim=512,relation_dim=512,num_heads=8,representation='relation_3d');fr=json.loads(a.features[0].with_suffix('.json').read_text());config={'kind':'v43_multitask_recovery_v1','model':asdict(cfg),'direct_head_version':'pooled_chunk_mlp_v3','phase_names':['clear_gripper','approach_grasp','grasp_lift','transfer_place','close_drawer'],'gate_preservation':'exact frozen base model','args':{'features':[str(x) for x in a.features],'labels':str(a.labels),'init_checkpoint':str(a.init_checkpoint),'output_dir':str(a.output_dir),'steps':5000},'feature_provenance':{k:fr.get(k) for k in ('oft_checkpoint','action_head_sha256','proprio_projector_sha256','action_normalization_key','recovery_target_coordinates','decoder_action_contract','image_preprocessing','decision_grid_contract','recovery_target_contract')}};a.output_dir.mkdir(parents=True,exist_ok=True);(a.output_dir/'config.json').write_text(json.dumps(config,indent=2)+'\n');print(json.dumps({'config':str(a.output_dir/'config.json'),'checkpoint':str(a.output_dir/'best.safetensors')}))
