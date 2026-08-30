@@ -4,6 +4,8 @@
 
 本文是 V4 系列实验的长期资产入口。历史固定任务方法见 [v4流程.md](./v4流程.md)，LIBERO-Plus 10,030 条通用恢复方法见 [LIBERO_PLUS_10030_RECOVERY_METHOD.md](./LIBERO_PLUS_10030_RECOVERY_METHOD.md)，历史过程与细节见 [HANDOFF.md](./HANDOFF.md)。模型和大规模数据仍保存在 `/data2/lty/naive-e-slotssm-runs`；本文进入代码仓库，用于防止路径、版本和成绩口径丢失。
 
+迁移到新服务器时使用 [SERVER_MIGRATION.md](./SERVER_MIGRATION.md)，迁移后运行 `python scripts/verify_server_migration.py` 校验代码版本、必需路径和关键文件哈希。
+
 ## 统一登记规范
 
 以后每完成一个任务族，都在本文新增一节，并固定登记以下内容：
